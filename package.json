@@ -1,0 +1,19 @@
+{
+  "name": "deployment",
+  "private": true,
+  "scripts": {
+    "dev": "flutter run -d macos",
+    "dev:web": "flutter run -d chrome --web-port=5173",
+    "dist:macos": "flutter build macos",
+    "dist:macos:dmg": "flutter build macos && bash scripts/build-macos-dmg.sh",
+    "dist:windows": "flutter build windows",
+    "dist:web": "flutter build web",
+    "dist:ios": "flutter build ipa",
+    "dist:android": "flutter build apk",
+    "doctor": "flutter doctor -v",
+    "analyze": "flutter analyze",
+    "test": "flutter test",
+    "verify": "flutter test && dart analyze",
+    "clean": "flutter clean"
+  }
+}

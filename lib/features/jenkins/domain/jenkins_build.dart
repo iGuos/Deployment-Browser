@@ -1,0 +1,224 @@
+import 'package:flutter/foundation.dart';
+
+/// Jenkins 构建结果。
+enum BuildResult {
+  success,
+  failure,
+  unstable,
+  aborted,
+  notBuilt,
+  running,
+  unknown;
+
+  static BuildResult fromString(String? raw, {bool building = false}) {
+    if (building) return BuildResult.running;
+    return switch (raw?.toUpperCase()) {
+      'SUCCESS' => BuildResult.success,
+      'FAILURE' => BuildResult.failure,
+      'UNSTABLE' => BuildResult.unstable,
+      'ABORTED' => BuildResult.aborted,
+      'NOT_BUILT' => BuildResult.notBuilt,
+      _ => BuildResult.unknown,
+    };
+  }
+}
+
+@immutable
+class JenkinsBuild {
+  const JenkinsBuild({
+    required this.number,
+    required this.url,
+    required this.building,
+    required this.timestamp,
+    required this.duration,
+    required this.estimatedDuration,
+    this.result,
+    this.displayName,
+    this.fullDisplayName,
+  });
+
+  final int number;
+  final String url;
+  final bool building;
+  final int timestamp;
+  final int duration;
+  final int estimatedDuration;
+  final String? result;
+  final String? displayName;
+  final String? fullDisplayName;
+
+  BuildResult get resultEnum => BuildResult.fromString(result, building: building);
+
+  /// 估算进度（0.0 – 1.0）。运行中且 estimatedDuration > 0 才有意义。
+  double get progress {
+    if (!building) return resultEnum == BuildResult.unknown ? 0.0 : 1.0;
+    if (estimatedDuration <= 0) return 0.0;
+    final elapsed = DateTime.now().millisecondsSinceEpoch - timestamp;
+    final ratio = elapsed / estimatedDuration;
+    if (ratio.isNaN || ratio.isInfinite) return 0.0;
+    return ratio.clamp(0.0, 0.98);
+  }
+
+  factory JenkinsBuild.fromJson(Map<String, dynamic> json) {
+    return JenkinsBuild(
+      number: (json['number'] as num?)?.toInt() ?? 0,
+      url: (json['url'] as String?) ?? '',
+      building: (json['building'] as bool?) ?? false,
+      timestamp: (json['timestamp'] as num?)?.toInt() ?? 0,
+      duration: (json['duration'] as num?)?.toInt() ?? 0,
+      estimatedDuration: (json['estimatedDuration'] as num?)?.toInt() ?? 0,
+      result: json['result'] as String?,
+      displayName: json['displayName'] as String?,
+      fullDisplayName: json['fullDisplayName'] as String?,
+    );
+  }
+}
+
+/// 一条「发版 / 参数化构建」历史记录（构建元数据 + 当次参数快照）。
+@immutable
+class JenkinsReleaseHistoryRow {
+  const JenkinsReleaseHistoryRow({
+    required this.build,
+    required this.parameters,
+    this.releasedBy,
+    this.gitRevision,
+  });
+
+  final JenkinsBuild build;
+
+  /// 来自该次 build 的 `ParametersAction`；非参数化 Job 可能为空。
+  final Map<String, String> parameters;
+
+  /// 触发构建的用户（`UserIdCause` 等）；解析不到则为 null。
+  final String? releasedBy;
+
+  /// 本次构建对应的 Git 提交 SHA（完整）；展示时可缩写。
+  final String? gitRevision;
+}
+
+/// 构建阶段（Pipeline `wfapi/describe` 接口的简化形式）
+@immutable
+class BuildStage {
+  const BuildStage({
+    required this.id,
+    required this.name,
+    required this.status,
+    required this.durationMillis,
+    this.startTimeMillis,
+  });
+
+  final String id;
+  final String name;
+
+  /// IN_PROGRESS / SUCCESS / FAILED / ABORTED / NOT_EXECUTED / PAUSED_PENDING_INPUT
+  final String status;
+
+  final int durationMillis;
+  final int? startTimeMillis;
+
+  bool get isRunning => status.toUpperCase() == 'IN_PROGRESS';
+  bool get isSuccess => status.toUpperCase() == 'SUCCESS';
+  bool get isFailed => status.toUpperCase() == 'FAILED' || status.toUpperCase() == 'ABORTED';
+  bool get isPending => !isRunning && !isSuccess && !isFailed;
+
+  factory BuildStage.fromJson(Map<String, dynamic> json) {
+    return BuildStage(
+      id: (json['id'] ?? '').toString(),
+      name: (json['name'] as String?) ?? '',
+      status: (json['status'] as String?) ?? 'UNKNOWN',
+      durationMillis: (json['durationMillis'] as num?)?.toInt() ?? 0,
+      startTimeMillis: (json['startTimeMillis'] as num?)?.toInt(),
+    );
+  }
+}
+
+/// 运行中构建的阶段展示：用上一跑 [template] 固定「全部阶段」顺序与名称，
+/// 用当前 [live]（`wfapi/describe` 增量结果）覆盖已出现的阶段；尚未出现的为
+/// `NOT_EXECUTED`，便于 UI 一次列出全部行再随进度逐段变绿。
+///
+/// [template] 为空时直接返回 [live]（首次构建 / 无上一跑数据时的退化）。
+List<BuildStage> mergeBuildStagesForRunning(
+  List<BuildStage> template,
+  List<BuildStage> live,
+) {
+  if (template.isEmpty) return live;
+  if (live.isEmpty) {
+    return [
+      for (final t in template)
+        BuildStage(
+          id: t.id,
+          name: t.name,
+          status: 'NOT_EXECUTED',
+          durationMillis: 0,
+          startTimeMillis: null,
+        ),
+    ];
+  }
+  final liveByName = <String, BuildStage>{};
+  for (final s in live) {
+    liveByName.putIfAbsent(s.name, () => s);
+  }
+  final usedNames = <String>{};
+  final out = <BuildStage>[];
+  for (final t in template) {
+    final s = liveByName[t.name];
+    if (s != null) {
+      out.add(s);
+      usedNames.add(t.name);
+    } else {
+      out.add(
+        BuildStage(
+          id: t.id,
+          name: t.name,
+          status: 'NOT_EXECUTED',
+          durationMillis: 0,
+          startTimeMillis: null,
+        ),
+      );
+    }
+  }
+  for (final s in live) {
+    if (!usedNames.contains(s.name)) {
+      out.add(s);
+      usedNames.add(s.name);
+    }
+  }
+  return out;
+}
+
+/// 队列项（POST /build 后的 Location 头返回此 URL）。
+@immutable
+class QueueItem {
+  const QueueItem({
+    required this.id,
+    required this.cancelled,
+    required this.executable,
+    this.why,
+  });
+
+  final int id;
+  final bool cancelled;
+
+  /// 一旦排队完成，executable 会包含一个 build 引用，含 number 与 url
+  final ({int number, String url})? executable;
+
+  final String? why;
+
+  bool get isWaiting => executable == null && !cancelled;
+  bool get isStarted => executable != null;
+
+  factory QueueItem.fromJson(Map<String, dynamic> json) {
+    final exec = json['executable'];
+    return QueueItem(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      cancelled: (json['cancelled'] as bool?) ?? false,
+      why: json['why'] as String?,
+      executable: exec is Map<String, dynamic>
+          ? (
+              number: (exec['number'] as num?)?.toInt() ?? 0,
+              url: (exec['url'] as String?) ?? '',
+            )
+          : null,
+    );
+  }
+}

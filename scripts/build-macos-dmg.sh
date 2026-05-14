@@ -49,12 +49,12 @@ create-dmg \
   ${VOL_ICON:+--volicon "$VOL_ICON"} \
   --background "$BG_IMG" \
   --window-pos 60 50 \
-  --window-size 1320 960 \
-  --icon-size 128 \
-  --icon "${APP_NAME}.app" 330 440 \
+  --window-size 660 500 \
+  --icon-size 100 \
+  --icon "${APP_NAME}.app" 165 220 \
   --hide-extension "${APP_NAME}.app" \
-  --app-drop-link 990 440 \
-  --text-size 14 \
+  --app-drop-link 495 220 \
+  --text-size 12 \
   --no-internet-enable \
   "$DIST_DIR/$DMG_NAME" \
   "$APP_PATH"
@@ -63,29 +63,6 @@ create-dmg \
 echo "锁定 DMG 窗口大小..."
 VOL_LABEL="$DISPLAY_NAME $VERSION"
 WRITABLE_DMG="$DIST_DIR/${APP_NAME}-${VERSION}-rw.dmg"
-MOUNT_POINT="$(mktemp -d)"
-
-hdiutil convert "$DIST_DIR/$DMG_NAME" -format UDRW -o "$WRITABLE_DMG" -quiet
-hdiutil attach "$WRITABLE_DMG" -mountpoint "$MOUNT_POINT" -quiet -nobrowse -noverify
-
-osascript <<APPLESCRIPT
-tell application "Finder"
-  tell disk "$VOL_LABEL"
-    open
-    delay 1
-    tell container window
-      set toolbar visible to false
-      set statusbar visible to false
-      set the bounds to {60, 50, 1380, 1010}
-    end tell
-    close container window
-  end tell
-end tell
-delay 2
-APPLESCRIPT
-
-hdiutil detach "$MOUNT_POINT" -quiet -force 2>/dev/null || true
-rm -rf "$MOUNT_POINT"
 
 # 修改 .DS_Store 中的 bwsp 记录，将窗口宽高写死（防止用户调整后保存）
 python3 - "$WRITABLE_DMG" "$VOL_LABEL" <<'PYEOF'
@@ -124,7 +101,7 @@ while i < len(data) - 4:
         try:
             pl = plistlib.loads(blob_data)
             # 写死窗口边界，覆盖用户可能改动的值
-            pl["WindowBounds"] = "{{60, 50}, {1320, 960}}"
+            pl["WindowBounds"] = "{{60, 50}, {720, 530}}"
             new_blob = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY)
             new_len = struct.pack(">I", len(new_blob))
             data[idx+8:idx+8+4] = new_len

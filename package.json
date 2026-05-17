@@ -5,7 +5,7 @@
     "dev": "flutter run -d macos",
     "dev:web": "flutter run -d chrome --web-port=5173",
     "dist:macos": "flutter build macos",
-    "dist:macos:dmg": "flutter build macos && bash scripts/build-macos-dmg.sh",
+    "dist:macos:dmg": "flutter build macos && python3 scripts/build-macos-dmg.py",
     "dist:windows": "flutter build windows",
     "dist:web": "flutter build web",
     "dist:ios": "flutter build ipa",

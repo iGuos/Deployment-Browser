@@ -9,6 +9,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../jenkins/data/jenkins_repository.dart';
 import '../application/release_controller.dart';
+import 'ansi_text.dart';
 
 /// 实时控制台日志（progressiveText 增量轮询）。
 class LogViewer extends ConsumerStatefulWidget {
@@ -170,7 +171,7 @@ class _LogViewerState extends ConsumerState<LogViewer> {
   }
 
   void _appendChunk(String text, int nextStart, DateTime receivedAt) {
-    final merged = '$_pendingLine$text';
+    final merged = stripJenkinsAnnotations('$_pendingLine$text');
     final parts = merged.split('\n');
     final endedWithBreak = merged.endsWith('\n');
     if (endedWithBreak) {
@@ -182,14 +183,7 @@ class _LogViewerState extends ConsumerState<LogViewer> {
 
     final next = parts
         .map(_normalizeLine)
-        .map(
-          (line) => _LogEntry(
-            lineNumber: _nextLineNumber++,
-            text: line,
-            level: _detectLevel(line),
-            receivedAt: receivedAt,
-          ),
-        )
+        .map((line) => _buildEntry(line, receivedAt))
         .toList(growable: false);
 
     setState(() {
@@ -204,20 +198,24 @@ class _LogViewerState extends ConsumerState<LogViewer> {
 
   void _flushPendingLine(DateTime receivedAt) {
     if (_pendingLine.isEmpty) return;
-    final line = _normalizeLine(_pendingLine);
+    final line = _normalizeLine(stripJenkinsAnnotations(_pendingLine));
     setState(() {
-      _entries.add(
-        _LogEntry(
-          lineNumber: _nextLineNumber++,
-          text: line,
-          level: _detectLevel(line),
-          receivedAt: receivedAt,
-        ),
-      );
+      _entries.add(_buildEntry(line, receivedAt));
       _pendingLine = '';
       _trimRows();
     });
     _notifyPanelChanged();
+  }
+
+  _LogEntry _buildEntry(String line, DateTime receivedAt) {
+    final plain = stripAnsi(line);
+    return _LogEntry(
+      lineNumber: _nextLineNumber++,
+      text: line,
+      plain: plain,
+      level: _detectLevel(plain),
+      receivedAt: receivedAt,
+    );
   }
 
   void _trimRows() {
@@ -257,7 +255,7 @@ class _LogViewerState extends ConsumerState<LogViewer> {
           };
           if (!levelMatched) return false;
           if (query.isEmpty) return true;
-          return entry.text.toLowerCase().contains(query);
+          return entry.plain.toLowerCase().contains(query);
         })
         .toList(growable: false);
   }
@@ -275,7 +273,7 @@ class _LogViewerState extends ConsumerState<LogViewer> {
     final rows = _visibleEntries;
     if (rows.isEmpty) return;
     await Clipboard.setData(
-      ClipboardData(text: rows.map((e) => e.text).join('\n')),
+      ClipboardData(text: rows.map((e) => e.plain).join('\n')),
     );
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -467,12 +465,16 @@ class _LogEntry {
   const _LogEntry({
     required this.lineNumber,
     required this.text,
+    required this.plain,
     required this.level,
     required this.receivedAt,
   });
 
   final int lineNumber;
+  // 含 ANSI 颜色码，渲染用
   final String text;
+  // 已剥离所有 ANSI 转义，用于过滤、复制、级别检测、表格显示
+  final String plain;
   final _LogLevel level;
   final DateTime receivedAt;
 }
@@ -977,19 +979,21 @@ class _PlainLogContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = _LogViewerColors.of(context);
-    final text = entries.map((entry) => entry.text).join('\n');
+    final base = TextStyle(
+      color: colors.text,
+      fontFamily: 'monospace',
+      fontSize: 12,
+      height: 1.45,
+    );
+    final children = <TextSpan>[];
+    for (var i = 0; i < entries.length; i++) {
+      if (i > 0) children.add(const TextSpan(text: '\n'));
+      children.addAll(parseAnsi(entries[i].text, base));
+    }
     return SingleChildScrollView(
       controller: scrollController,
       padding: const EdgeInsets.all(10),
-      child: SelectableText(
-        text,
-        style: TextStyle(
-          color: colors.text,
-          fontFamily: 'monospace',
-          fontSize: 12,
-          height: 1.45,
-        ),
-      ),
+      child: SelectableText.rich(TextSpan(style: base, children: children)),
     );
   }
 }
@@ -1097,7 +1101,7 @@ class _NetworkLogRow extends StatelessWidget {
               Expanded(
                 child: _BodyCell(
                   child: Text(
-                    entry.text,
+                    entry.plain,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -1140,13 +1144,23 @@ class _NetworkLogRow extends StatelessWidget {
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: size.height * 0.62),
               child: SingleChildScrollView(
-                child: SelectableText(
-                  entry.text,
-                  style: TextStyle(
-                    color: colors.text,
-                    fontFamily: 'monospace',
-                    fontSize: 12,
-                    height: 1.45,
+                child: SelectableText.rich(
+                  TextSpan(
+                    style: TextStyle(
+                      color: colors.text,
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                    children: parseAnsi(
+                      entry.text,
+                      TextStyle(
+                        color: colors.text,
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.45,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -1155,7 +1169,7 @@ class _NetworkLogRow extends StatelessWidget {
           actions: [
             TextButton.icon(
               onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: entry.text));
+                await Clipboard.setData(ClipboardData(text: entry.plain));
                 if (!dialogContext.mounted) return;
                 Navigator.of(dialogContext).pop();
                 ScaffoldMessenger.of(

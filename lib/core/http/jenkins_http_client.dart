@@ -66,11 +66,19 @@ Dio buildJenkinsDio({
       validateStatus: (status) => status != null && status < 500,
     ),
   );
-  dio.interceptors.add(CookieManager(CookieJar()));
+  final cookieJar = CookieJar();
+  _cookieJars[dio] = cookieJar;
+  dio.interceptors.add(CookieManager(cookieJar));
   dio.interceptors.add(_LightLogInterceptor());
   attachJenkinsNetworkProxy(dio, networkProxy);
   return dio;
 }
+
+// 通过 Expando 把 CookieJar 挂到对应 Dio 上，让 jenkins_api 在 CSRF/session 失效时
+// 能把陈旧的 JSESSIONID 一并清掉，避免新 crumb 仍配旧 cookie 继续被服务端 403。
+final Expando<CookieJar> _cookieJars = Expando<CookieJar>('jenkinsCookieJar');
+
+CookieJar? jenkinsCookieJarOf(Dio dio) => _cookieJars[dio];
 
 class _LightLogInterceptor extends Interceptor {
   @override

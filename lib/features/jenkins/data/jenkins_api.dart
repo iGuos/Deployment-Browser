@@ -17,7 +17,11 @@ class JenkinsApi {
   JenkinsApi(this._dio);
 
   final Dio _dio;
-  ({String field, String value})? _crumb;
+  _CrumbCache? _crumb;
+
+  // Jenkins crumb 与服务端 session 绑定；session 过期后旧 crumb 必然 403。
+  // 设一个比常见 idle timeout 短得多的 TTL，强制定期重拉，避免长时间不操作后第一次发版失败。
+  static const Duration _crumbTtl = Duration(minutes: 5);
 
   /// 进程内记录每个 Job 上次成功的触发策略编号。
   ///
@@ -504,21 +508,26 @@ class JenkinsApi {
   /// Referer，与 [triggerBuild] 一致。
   Future<void> stopBuild(String jobFullName, int buildNumber) async {
     final base = '${_jobApiPath(jobFullName, withApi: false)}/$buildNumber';
-    final crumb = await _fetchCrumb();
-    final headers = <String, dynamic>{
-      if (crumb != null) crumb.field: crumb.value,
-      'Referer': _jobPageReferer(jobFullName),
-    };
-    final options = Options(
-      followRedirects: false,
-      validateStatus: (s) => s != null && s < 500,
-      responseType: ResponseType.plain,
-      headers: headers,
-    );
+
+    Future<Options> buildOptions() async {
+      final crumb = await _fetchCrumb();
+      return Options(
+        followRedirects: false,
+        validateStatus: (s) => s != null && s < 500,
+        responseType: ResponseType.plain,
+        headers: <String, dynamic>{
+          if (crumb != null) crumb.field: crumb.value,
+          'Referer': _jobPageReferer(jobFullName),
+        },
+      );
+    }
 
     Future<int> postOnce(String suffix) async {
       try {
-        final res = await _dio.post<dynamic>('$base/$suffix', options: options);
+        final res = await _dio.post<dynamic>(
+          '$base/$suffix',
+          options: await buildOptions(),
+        );
         return res.statusCode ?? 0;
       } on DioException catch (e) {
         throw toJenkinsException(e);
@@ -530,7 +539,8 @@ class JenkinsApi {
     final stopCode = await postOnce('stop');
     if (stopCode == 200 || stopCode == 201 || stopCode == 302 || stopCode == 303) return;
     if (stopCode == 403 || stopCode == 401) {
-      _crumb = null; // 重新拉一次 crumb 再试
+      // session 可能 idle 失效，清掉 crumb+cookie 后用全新 header 再试一次
+      await _clearSession();
       final retried = await postOnce('stop');
       if (retried == 200 || retried == 201 || retried == 302 || retried == 303) return;
     }
@@ -549,6 +559,7 @@ class JenkinsApi {
     String jobFullName,
     Map<String, String> parameters, {
     int attempt = 0,
+    bool sessionRefreshed = false,
   }) async {
     final hasParams = parameters.isNotEmpty;
     final maxAttempts = hasParams ? 6 : 4;
@@ -606,12 +617,33 @@ class JenkinsApi {
 
     final code = res.statusCode ?? 0;
     if (code == 403 || code == 401) {
-      _crumb = null;
-      return _triggerBuildWithRetries(jobFullName, parameters, attempt: attempt + 1);
+      // 第一次 403：很可能是 idle 后 session 失效。清掉 crumb+cookie，**同 strategy** 再试
+      // 一次；否则一上来就推进 strategy，正常 Job 会被误推到 Pipeline json 路径。
+      if (!sessionRefreshed) {
+        await _clearSession();
+        return _triggerBuildWithRetries(
+          jobFullName,
+          parameters,
+          attempt: attempt,
+          sessionRefreshed: true,
+        );
+      }
+      // 刷新过仍 403 → 真正的策略不匹配 / 权限问题，再推进策略试下一种
+      return _triggerBuildWithRetries(
+        jobFullName,
+        parameters,
+        attempt: attempt + 1,
+        sessionRefreshed: true,
+      );
     }
     // buildWithParameters 在部分 Pipeline 上会 **400**，换 json=/build 后再试
     if (code == 400) {
-      return _triggerBuildWithRetries(jobFullName, parameters, attempt: attempt + 1);
+      return _triggerBuildWithRetries(
+        jobFullName,
+        parameters,
+        attempt: attempt + 1,
+        sessionRefreshed: sessionRefreshed,
+      );
     }
     if (code >= 400) {
       final raw = res.data;
@@ -769,26 +801,44 @@ class JenkinsApi {
 
   // ---------- 内部 ----------
 
-  /// 获取 Jenkins CSRF crumb。
+  /// 获取 Jenkins CSRF crumb（带 TTL 缓存）。
   ///
   /// 很多 Jenkins 开启了 CSRF Protection，所有 POST（包括 build/buildWithParameters）
   /// 都必须带 crumb header，否则会返回 403，看起来像“没有权限”。
   /// 旧 Jenkins / 关闭 CSRF 的环境可能没有该接口，失败时返回 null。
   Future<({String field, String value})?> _fetchCrumb() async {
-    if (_crumb != null) return _crumb;
+    final cached = _crumb;
+    if (cached != null &&
+        DateTime.now().difference(cached.fetchedAt) < _crumbTtl) {
+      return (field: cached.field, value: cached.value);
+    }
     try {
       final res = await _dio.get<Map<String, dynamic>>('/crumbIssuer/api/json');
-      if (res.statusCode != 200 || res.data == null) return null;
+      if (res.statusCode != 200 || res.data == null) {
+        _crumb = null;
+        return null;
+      }
       final field = res.data!['crumbRequestField'] as String?;
       final value = res.data!['crumb'] as String?;
       if (field == null || field.isEmpty || value == null || value.isEmpty) {
+        _crumb = null;
         return null;
       }
-      _crumb = (field: field, value: value);
-      return _crumb;
+      _crumb = _CrumbCache(field, value, DateTime.now());
+      return (field: field, value: value);
     } catch (_) {
       return null;
     }
+  }
+
+  /// 同时清掉 crumb 和会话 cookie。
+  ///
+  /// 单清 crumb 不够：CookieManager 仍会把旧 `JSESSIONID` 带在下一次请求上，
+  /// 服务端拿到 "新 crumb + 旧 session" 仍会判定不匹配并继续 403。
+  Future<void> _clearSession() async {
+    _crumb = null;
+    final jar = jenkinsCookieJarOf(_dio);
+    if (jar != null) await jar.deleteAll();
   }
 
   /// Job 控制台页 URL，用作 `Referer`（需与 Jenkins 站点同源）。
@@ -815,6 +865,14 @@ class JenkinsApi {
 
     return build(depth);
   }
+}
+
+class _CrumbCache {
+  _CrumbCache(this.field, this.value, this.fetchedAt);
+
+  final String field;
+  final String value;
+  final DateTime fetchedAt;
 }
 
 bool _isJenkinsAllViewName(String name) => name.toLowerCase() == 'all';

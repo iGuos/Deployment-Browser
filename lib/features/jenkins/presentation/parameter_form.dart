@@ -3,12 +3,13 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../l10n/app_localizations.dart';
 import '../domain/build_parameter.dart';
+import '../domain/ref_option.dart';
 
-/// 加载某个参数的"可选值"集合（典型用例：git 分支历史）。
+/// 加载某个参数的"可选值"集合（典型用例：git 分支/Tag）。
 /// 失败时应抛异常，UI 会展示「重试」按钮。
 ///
 /// [forceRefresh] 为 true 时绕过任何缓存层，强制走网络重拉。
-typedef BranchOptionsLoader = Future<List<String>> Function(
+typedef BranchOptionsLoader = Future<List<RefOption>> Function(
   String paramName, {
   bool forceRefresh,
 });
@@ -332,6 +333,13 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
   late final TextEditingController _controller;
   late final FocusNode _focusNode;
   List<String> _options = const [];
+  // 仅分支模式有效：每个候选对应的 ref 类型（branch/tag/revision）。
+  // choice 模式下保持为空 map，UI 上不会显示类型筛选条。
+  Map<String, RefType> _types = const {};
+  // 用户点选的类型筛选；null = 不限。
+  // 用 ValueNotifier 是因为筛选条画在 RawAutocomplete 的 Overlay 里，外层 setState
+  // 触发不到 Overlay 重建——只能让 Overlay 内部用 ValueListenableBuilder 自己听。
+  final ValueNotifier<RefType?> _typeFilter = ValueNotifier<RefType?>(null);
   bool _loading = false;
   Object? _error;
   bool _autoSelectedDefault = false;
@@ -384,13 +392,21 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
         widget.paramName,
         forceRefresh: forceRefresh,
       );
-      final merged = <String>{};
-      merged.addAll(widget.fixedChoices);
-      merged.addAll(loaded);
-      final list = merged.toList(growable: false);
+      // 用 LinkedHashMap 风格：fixedChoices 先入、保持原顺序；loader 新增按其原顺序追加。
+      // fixedChoices 缺少类型信息，作为 unknown 占位；plugin/历史返回的类型覆盖之。
+      final byValue = <String, RefType>{};
+      for (final v in widget.fixedChoices) {
+        if (v.isEmpty) continue;
+        byValue[v] = RefType.unknown;
+      }
+      for (final opt in loaded) {
+        byValue[opt.value] = opt.type;
+      }
+      final list = byValue.keys.toList(growable: false);
       if (!mounted) return;
       setState(() {
         _options = list;
+        _types = byValue;
         _loading = false;
       });
       _maybeApplyDefault();
@@ -399,8 +415,9 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
       setState(() {
         _loading = false;
         _error = e;
+        _options = widget.fixedChoices;
+        _types = {for (final v in widget.fixedChoices) v: RefType.unknown};
       });
-      _options = widget.fixedChoices;
       _maybeApplyDefault();
     }
   }
@@ -448,10 +465,33 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
     _focusNode.removeListener(_onFocusChanged);
     _controller.dispose();
     _focusNode.dispose();
+    _typeFilter.dispose();
     super.dispose();
   }
 
-  Iterable<String> _filter(String query) {
+  /// 是否启用类型筛选条（仅在分支模式且至少有 2 种类型时显示）。
+  bool get _hasTypeMix {
+    if (_types.isEmpty) return false;
+    final seen = <RefType>{};
+    for (final t in _types.values) {
+      if (t == RefType.unknown) continue;
+      seen.add(t);
+      if (seen.length > 1) return true;
+    }
+    return false;
+  }
+
+  int _countOfType(RefType type) {
+    var n = 0;
+    for (final t in _types.values) {
+      if (t == type) n++;
+    }
+    return n;
+  }
+
+  /// 仅按文本过滤——给 RawAutocomplete 的 optionsBuilder 用。
+  /// 类型筛选在 optionsViewBuilder 内部叠加（基于 [_typeFilter]）。
+  Iterable<String> _filterByText(String query) {
     if (_options.isEmpty) return const [];
     if (query.isEmpty) return _options;
     final q = query.toLowerCase();
@@ -468,6 +508,13 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
       }
     }
     return [...prefix, ...contains];
+  }
+
+  List<String> _applyTypeFilter(Iterable<String> pool, RefType? filter) {
+    if (filter == null) return pool.toList(growable: false);
+    return pool
+        .where((o) => (_types[o] ?? RefType.unknown) == filter)
+        .toList(growable: false);
   }
 
   void _onUserTyped(String value) {
@@ -498,8 +545,9 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
         return RawAutocomplete<String>(
           textEditingController: _controller,
           focusNode: _focusNode,
+          // 类型筛选不放在这里——这里只跑文本匹配，否则筛选条会让面板因 0 命中而消失。
           optionsBuilder: (text) =>
-              widget.filterable ? _filter(text.text) : _options,
+              widget.filterable ? _filterByText(text.text) : _options,
           onSelected: _onSelected,
           fieldViewBuilder: (ctx, controller, focusNode, onSubmit) {
             final readOnlyDropdown = !widget.freeInput && !widget.filterable;
@@ -535,76 +583,83 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
             );
           },
           optionsViewBuilder: (ctx, onSelected, options) {
-            final list = options.toList(growable: false);
-            if (list.isEmpty) return const SizedBox.shrink();
-            return Align(
-              alignment: Alignment.topLeft,
-              child: Material(
-                elevation: 4,
-                borderRadius: BorderRadius.circular(8),
-                color: palette.surfaceRaised,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxHeight: 240, maxWidth: width),
-                  child: SizedBox(
-                    width: width,
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      shrinkWrap: true,
-                      itemCount: list.length,
-                      separatorBuilder: (_, _) => Divider(
-                        height: 1,
-                        color: palette.borderSubtle.withValues(alpha: 0.6),
-                      ),
-                      itemBuilder: (ctx, i) {
-                        final item = list[i];
-                        final selected = _controller.text == item;
-                        final isPrimary = widget.primaryPicker != null &&
-                            _isPrimaryLike(item);
-                        return InkWell(
-                          onTap: () => onSelected(item),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  isPrimary
-                                      ? Icons.star_rounded
-                                      : (selected
-                                          ? Icons.check_rounded
-                                          : widget.iconData),
-                                  size: 14,
-                                  color: isPrimary
-                                      ? palette.warning
-                                      : (selected
-                                          ? palette.accent
-                                          : palette.muted),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    item,
-                                    style: TextStyle(
-                                      color: palette.text,
-                                      fontSize: 13,
-                                      fontWeight: selected
-                                          ? FontWeight.w600
-                                          : FontWeight.w400,
+            // ValueListenableBuilder 让类型筛选切换能立即重绘 Overlay
+            // （RawAutocomplete 的 Overlay 不会随父级 setState 重建）。
+            return ValueListenableBuilder<RefType?>(
+              valueListenable: _typeFilter,
+              builder: (ctx, currentFilter, _) {
+                final list = _applyTypeFilter(options, currentFilter);
+                final showTypeBar = _hasTypeMix;
+                if (list.isEmpty && !showTypeBar) {
+                  return const SizedBox.shrink();
+                }
+                return Align(
+                  alignment: Alignment.topLeft,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    color: palette.surfaceRaised,
+                    child: ConstrainedBox(
+                      constraints:
+                          BoxConstraints(maxHeight: 280, maxWidth: width),
+                      child: SizedBox(
+                        width: width,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (showTypeBar)
+                              _RefTypeFilterBar(
+                                current: currentFilter,
+                                branchCount: _countOfType(RefType.branch),
+                                tagCount: _countOfType(RefType.tag),
+                                revisionCount: _countOfType(RefType.revision),
+                                totalCount: _options.length,
+                                onSelect: (t) => _typeFilter.value = t,
+                              ),
+                            Flexible(
+                              child: list.isEmpty
+                                  ? _EmptyHint(
+                                      onClearFilter: () =>
+                                          _typeFilter.value = null,
+                                    )
+                                  : ListView.separated(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 4,
+                                      ),
+                                      shrinkWrap: true,
+                                      itemCount: list.length,
+                                      separatorBuilder: (_, _) => Divider(
+                                        height: 1,
+                                        color: palette.borderSubtle
+                                            .withValues(alpha: 0.6),
+                                      ),
+                                      itemBuilder: (ctx, i) {
+                                        final item = list[i];
+                                        final selected =
+                                            _controller.text == item;
+                                        final isPrimary =
+                                            widget.primaryPicker != null &&
+                                                _isPrimaryLike(item);
+                                        final type =
+                                            _types[item] ?? RefType.unknown;
+                                        return _RefItemRow(
+                                          item: item,
+                                          selected: selected,
+                                          isPrimary: isPrimary,
+                                          type: type,
+                                          fallbackIcon: widget.iconData,
+                                          onTap: () => onSelected(item),
+                                        );
+                                      },
                                     ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                              ],
                             ),
-                          ),
-                        );
-                      },
+                          ],
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
+                );
+              },
             );
           },
         );
@@ -627,6 +682,277 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
         l == 'master' ||
         l == 'origin/main' ||
         l == 'origin/master';
+  }
+}
+
+/// 下拉面板顶部的「分类 tab 条」：全部 / 分支 / Tag / Commit。
+///
+/// 没有 revision 时不显示 Commit；其它三项始终在分支模式可见。
+class _RefTypeFilterBar extends StatelessWidget {
+  const _RefTypeFilterBar({
+    required this.current,
+    required this.branchCount,
+    required this.tagCount,
+    required this.revisionCount,
+    required this.totalCount,
+    required this.onSelect,
+  });
+
+  final RefType? current;
+  final int branchCount;
+  final int tagCount;
+  final int revisionCount;
+  final int totalCount;
+  final void Function(RefType?) onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final chips = <Widget>[
+      _RefTypeChip(
+        label: '全部',
+        count: totalCount,
+        selected: current == null,
+        icon: Icons.list_rounded,
+        onTap: () => onSelect(null),
+      ),
+      if (branchCount > 0)
+        _RefTypeChip(
+          label: '分支',
+          count: branchCount,
+          selected: current == RefType.branch,
+          icon: Icons.alt_route_rounded,
+          onTap: () => onSelect(RefType.branch),
+        ),
+      if (tagCount > 0)
+        _RefTypeChip(
+          label: 'Tag',
+          count: tagCount,
+          selected: current == RefType.tag,
+          icon: Icons.local_offer_rounded,
+          onTap: () => onSelect(RefType.tag),
+        ),
+      if (revisionCount > 0)
+        _RefTypeChip(
+          label: 'Commit',
+          count: revisionCount,
+          selected: current == RefType.revision,
+          icon: Icons.commit_rounded,
+          onTap: () => onSelect(RefType.revision),
+        ),
+    ];
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: palette.borderSubtle.withValues(alpha: 0.6)),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (var i = 0; i < chips.length; i++) ...[
+              if (i > 0) const SizedBox(width: 6),
+              chips[i],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RefTypeChip extends StatelessWidget {
+  const _RefTypeChip({
+    required this.label,
+    required this.count,
+    required this.selected,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String label;
+  final int count;
+  final bool selected;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        height: 24,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected
+              ? palette.accent.withValues(alpha: 0.16)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected
+                ? palette.accent.withValues(alpha: 0.72)
+                : palette.borderSubtle,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 12,
+              color: selected ? palette.accent : palette.muted,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: selected ? palette.accent : palette.muted,
+                fontSize: 11,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              '$count',
+              style: TextStyle(
+                color: selected ? palette.accent : palette.muted,
+                fontSize: 10,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 单条候选项：根据 [RefType] 选不同图标，选中态、主分支态相应高亮。
+class _RefItemRow extends StatelessWidget {
+  const _RefItemRow({
+    required this.item,
+    required this.selected,
+    required this.isPrimary,
+    required this.type,
+    required this.fallbackIcon,
+    required this.onTap,
+  });
+
+  final String item;
+  final bool selected;
+  final bool isPrimary;
+  final RefType type;
+  final IconData fallbackIcon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final typeIcon = switch (type) {
+      RefType.branch => Icons.alt_route_rounded,
+      RefType.tag => Icons.local_offer_rounded,
+      RefType.revision => Icons.commit_rounded,
+      RefType.unknown => fallbackIcon,
+    };
+    final iconColor = isPrimary
+        ? palette.warning
+        : (selected ? palette.accent : palette.muted);
+    final iconData = isPrimary
+        ? Icons.star_rounded
+        : (selected ? Icons.check_rounded : typeIcon);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Icon(iconData, size: 14, color: iconColor),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                displayRef(item),
+                style: TextStyle(
+                  color: palette.text,
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (type == RefType.tag)
+              _TypeBadge(text: 'tag', color: palette.warning)
+            else if (type == RefType.revision)
+              _TypeBadge(text: 'commit', color: palette.info),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TypeBadge extends StatelessWidget {
+  const _TypeBadge({required this.text, required this.color});
+
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 9.5,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.3,
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyHint extends StatelessWidget {
+  const _EmptyHint({required this.onClearFilter});
+
+  final VoidCallback onClearFilter;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      child: Row(
+        children: [
+          Icon(Icons.search_off_rounded, size: 14, color: palette.muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '当前类型筛选下没有匹配项',
+              style: TextStyle(color: palette.muted, fontSize: 12),
+            ),
+          ),
+          TextButton(
+            onPressed: onClearFilter,
+            style: TextButton.styleFrom(
+              foregroundColor: palette.accent,
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+            ),
+            child: const Text('清除筛选'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

@@ -78,7 +78,7 @@ void main() {
         count: 25,
       );
 
-      expect(values, ['feature/x', 'main']);
+      expect(values.map((o) => o.value).toList(), ['feature/x', 'main']);
       expect(captured?.uri.path, '/job/team/job/app/api/json');
       expect(
         captured?.queryParameters['tree'],

@@ -8,6 +8,7 @@ import '../../settings/domain/jenkins_config.dart';
 import '../domain/build_parameter.dart';
 import '../domain/jenkins_build.dart';
 import '../domain/jenkins_node.dart';
+import '../domain/ref_option.dart';
 import 'jenkins_api.dart';
 
 /// 高层 Repository。封装错误转换 + 简单缓存。
@@ -20,11 +21,11 @@ class JenkinsRepository {
   /// triggerBuild 用它来跳过 Pipeline 不支持的 `buildWithParameters` 探测。
   final Map<String, String> _jobClassCache = {};
 
-  /// 缓存 (jobFullName -> paramName -> 历史出现过的分支值)。
+  /// 缓存 (jobFullName -> paramName -> 历史出现过的分支/Tag 值)。
   ///
   /// 同一项目同一参数在一次会话里被反复打开下拉时不需要每次再去拉构建历史；
   /// 用户如果需要刷新，可以调 [refreshBranchOptions]。
-  final Map<String, Map<String, List<String>>> _branchOptionsCache = {};
+  final Map<String, Map<String, List<RefOption>>> _branchOptionsCache = {};
 
   Future<({String version, String? mode})> ping() async {
     try {
@@ -111,11 +112,11 @@ class JenkinsRepository {
     }
   }
 
-  /// 拉「该 Job × 该参数」可能的分支值集合，命中缓存就直接返回。
+  /// 拉「该 Job × 该参数」可能的分支/Tag 候选集合（带类型），命中缓存就直接返回。
   ///
-  /// 优先调用 Git Parameter Plugin 的 `fillValueItems` 接口（返回远端全量分支）；
+  /// 优先调用 Git Parameter Plugin 的 `fillValueItems` 接口（返回远端全量 ref + 类型信息）；
   /// 若该接口返回空（非 Git Parameter 参数或权限不足），降级为扫描历史构建记录。
-  Future<List<String>> fetchBranchOptions(
+  Future<List<RefOption>> fetchBranchOptions(
     String jobFullName,
     String paramName, {
     int count = 50,
@@ -127,7 +128,7 @@ class JenkinsRepository {
       if (cached != null) return cached;
     }
     try {
-      // 先尝试 Git Parameter Plugin 接口，能拿到远端所有分支。
+      // 先尝试 Git Parameter Plugin 接口，能拿到远端所有分支 + tag。
       final gitParamValues = await _api.fetchGitParameterValues(jobFullName, paramName);
       if (gitParamValues.isNotEmpty) {
         perJob[paramName] = gitParamValues;

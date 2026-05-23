@@ -6,6 +6,7 @@ import '../../../core/http/jenkins_http_client.dart';
 import '../domain/build_parameter.dart';
 import '../domain/jenkins_build.dart';
 import '../domain/jenkins_node.dart';
+import '../domain/ref_option.dart';
 
 /// 合成视图文件夹节点使用的 [JenkinsNode.fullName] 前缀（非 Jenkins 真实路径）。
 const String kJenkinsSyntheticViewFullNamePrefix = '__jenkins_view__/';
@@ -221,7 +222,10 @@ class JenkinsApi {
   /// 该接口由 `net.uaznia.lukanus.hudson.plugins.gitparameter.GitParameterDefinition`
   /// 提供，Jenkins 使用 Job 自身配置的 SCM 凭证直接查询远端，无需本地 git。
   /// 若 Job 未使用 Git Parameter 插件或权限不足，请求会 4xx，返回空列表。
-  Future<List<String>> fetchGitParameterValues(
+  ///
+  /// 返回里同时带 [RefType]：插件给的 `value` / `name` 含 `refs/tags/`、`tags/`、
+  /// `origin/`、`[Tag]`/`[Branch]` 等线索时能精确判定；否则回退到字面启发式。
+  Future<List<RefOption>> fetchGitParameterValues(
     String jobFullName,
     String paramName,
   ) async {
@@ -240,8 +244,12 @@ class JenkinsApi {
       if (values is! List) return const [];
       return values
           .whereType<Map<String, dynamic>>()
-          .map((e) => (e['value'] as String?) ?? '')
-          .where((v) => v.isNotEmpty)
+          .map((e) {
+            final value = (e['value'] as String?) ?? '';
+            final name = e['name'] as String?;
+            return RefOption(value, detectRefType(value, pluginName: name));
+          })
+          .where((o) => o.value.isNotEmpty)
           .toList();
     } catch (_) {
       return const [];
@@ -256,7 +264,7 @@ class JenkinsApi {
   ///
   /// - 失败一律降级为空列表（调用方会把它当作"没有候选"，输入框照常工作）。
   /// - [count] 控制扫描多少条历史；默认 50 条对绝大多数项目已足够稳定。
-  Future<List<String>> fetchHistoricalParameterValues(
+  Future<List<RefOption>> fetchHistoricalParameterValues(
     String jobFullName,
     String paramName, {
     int count = 50,
@@ -273,7 +281,7 @@ class JenkinsApi {
       // 用 LinkedHashSet 保持"最近 build → 最近的值"靠前；
       // 同一分支多次出现只算一次。
       final seen = <String>{};
-      final ordered = <String>[];
+      final ordered = <RefOption>[];
       for (final b in builds) {
         if (b is! Map<String, dynamic>) continue;
         final actions = b['actions'];
@@ -289,7 +297,7 @@ class JenkinsApi {
             if (v == null) continue;
             final s = v.toString();
             if (s.isEmpty) continue;
-            if (seen.add(s)) ordered.add(s);
+            if (seen.add(s)) ordered.add(RefOption(s, detectRefType(s)));
           }
         }
       }

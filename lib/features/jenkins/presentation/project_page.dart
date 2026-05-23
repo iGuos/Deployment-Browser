@@ -64,6 +64,15 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
     );
 
     void invalidateDetail() {
+      // 顺便丢掉 repo 层 (_jobClassCache / _branchOptionsCache)，否则即使 provider
+      // 重拉了 job 定义，旧的 jobClass 和分支候选还在缓存里。
+      final repo = ref.read(
+        jenkinsRepositoryForAccountProvider(widget.jenkinsAccountId),
+      );
+      repo?.invalidateJobDetailCaches(widget.fullName);
+      if (widget.fullName != _activeJobFullName) {
+        repo?.invalidateJobDetailCaches(_activeJobFullName);
+      }
       ref.invalidate(projectDetailProvider(_detailKey(widget.fullName)));
       ref.invalidate(projectDetailProvider(_detailKey(_activeJobFullName)));
     }
@@ -101,6 +110,7 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
                     () => _parameterValues = {..._parameterValues, k: v},
                   ),
                   onTrigger: _onTrigger,
+                  onRefresh: invalidateDetail,
                   activeJobFullName: _activeJobFullName,
                   activeRun: runTabs.activeRun,
                 );
@@ -179,6 +189,7 @@ class _LeftPane extends ConsumerWidget {
     required this.parameterValues,
     required this.onChangeParameter,
     required this.onTrigger,
+    required this.onRefresh,
     required this.activeJobFullName,
     required this.activeRun,
   });
@@ -194,6 +205,7 @@ class _LeftPane extends ConsumerWidget {
   final Map<String, String> parameterValues;
   final void Function(String key, String value) onChangeParameter;
   final Future<void> Function() onTrigger;
+  final VoidCallback onRefresh;
   final String activeJobFullName;
 
   /// 当前活动 tab 对应的 run。仅用于按钮 loading 态显示——避免在
@@ -254,6 +266,21 @@ class _LeftPane extends ConsumerWidget {
                         style: TextStyle(color: palette.muted, fontSize: 11.5),
                       ),
                     ],
+                  ),
+                ),
+                Tooltip(
+                  message: l10n.commonRefresh,
+                  waitDuration: const Duration(milliseconds: 300),
+                  child: IconButton(
+                    onPressed: onRefresh,
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    color: palette.muted,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 32,
+                      height: 32,
+                    ),
+                    visualDensity: VisualDensity.compact,
                   ),
                 ),
               ],

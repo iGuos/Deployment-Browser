@@ -215,6 +215,13 @@ class _WorkspaceSidebarState extends ConsumerState<WorkspaceSidebar> {
         ? null
         : PageStorageKey<String>('$scrollBase$scrollSuffix');
 
+    // 仅在「收藏」模式启用拖拽换序：顺序本来就是本地持久化的，且全部为顶级
+    // 平铺节点（无 folder/multibranch 子层），ReorderableListView 用起来最直接。
+    final searching = _searchCtrl.text.trim().isNotEmpty;
+    final reorderEnabled = !searching &&
+        treeMode == JenkinsSidebarTreeMode.favorites &&
+        accountId != null;
+
     return _TreeBody(
       scrollStorageKey: scrollKey,
       nodes: roots,
@@ -224,6 +231,20 @@ class _WorkspaceSidebarState extends ConsumerState<WorkspaceSidebar> {
       onToggleFavorite: accountId == null
           ? null
           : (fullName) => ref.read(jenkinsSidebarFavoritesProvider(accountId).notifier).toggle(fullName),
+      onReorder: reorderEnabled
+          ? (from, to) {
+              // ReorderableListView 在以下两种情况也会触发但视觉无变化，直接短路。
+              if (to == from || to == from + 1) return;
+              if (from < 0 || from >= roots.length) return;
+              final fromName = roots[from].fullName;
+              // ReorderableListView 语义：to 是"插入到原列表该索引前"；
+              // to == length 表示拖到最末——传 null 让 notifier 落到 state 末尾。
+              final beforeName = to < roots.length ? roots[to].fullName : null;
+              ref
+                  .read(jenkinsSidebarFavoritesProvider(accountId).notifier)
+                  .reorderByFullName(fromName, beforeFullName: beforeName);
+            }
+          : null,
       onToggle: (key) => setState(() {
         if (!_expanded.add(key)) _expanded.remove(key);
       }),
@@ -421,6 +442,7 @@ class _TreeBody extends StatelessWidget {
     required this.forceExpandAll,
     required this.sidebarHighlightFullNames,
     required this.mobileToggleOpenFullNames,
+    this.onReorder,
   });
 
   /// 按账号（及树布局模式）区分，切换一级 Jenkins 标签回来时保留项目树滚动位置。
@@ -441,6 +463,9 @@ class _TreeBody extends StatelessWidget {
   /// 仅移动端用于「再点关闭」判断；桌面端恒为空集。
   final Set<String> mobileToggleOpenFullNames;
 
+  /// 非空表示启用拖拽换序（当前仅收藏模式传值）。
+  final void Function(int oldIndex, int newIndex)? onReorder;
+
   @override
   Widget build(BuildContext context) {
     if (nodes.isEmpty) {
@@ -453,6 +478,25 @@ class _TreeBody extends StatelessWidget {
             style: TextStyle(color: palette.muted, fontSize: 12),
           ),
         ),
+      );
+    }
+    if (onReorder != null) {
+      return ReorderableListView.builder(
+        // 关掉默认的右侧拖拽手柄：那个图标会和收藏星按钮挤在一起；
+        // 用 ReorderableDragStartListener 把整行作为拖拽源，行内点击行为不受影响
+        // （drag 与 tap 在 gesture arena 里按移动距离自然区分）。
+        buildDefaultDragHandles: false,
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        itemCount: nodes.length,
+        itemBuilder: (ctx, i) {
+          final node = nodes[i];
+          return ReorderableDragStartListener(
+            key: ValueKey('fav:${node.fullName}'),
+            index: i,
+            child: _buildNode(ctx, node, depth: 0),
+          );
+        },
+        onReorder: onReorder!,
       );
     }
     return ListView(

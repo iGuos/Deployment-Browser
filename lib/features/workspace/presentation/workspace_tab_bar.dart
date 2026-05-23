@@ -41,13 +41,168 @@ class WorkspaceTabBar extends ConsumerWidget {
         itemBuilder: (ctx, i) {
           final tab = tabs[i];
           final active = tab.id == tabActiveId;
-          return _TabChip(
+          return _DraggableTab(
+            key: ValueKey(tab.id),
+            index: i,
             tab: tab,
             active: active,
             onActivate: () => notifier.activateTabForAccount(accountId, tab.id),
             onClose: () => notifier.closeTabForAccount(accountId, tab.id),
+            onReorder: (from, to) =>
+                notifier.reorderTabForAccount(accountId, from, to),
           );
         },
+      ),
+    );
+  }
+}
+
+/// 把 [_TabChip] 包一层 [Draggable] + [DragTarget]，实现 Chrome 风格的同栏拖拽换序。
+///
+/// 设计要点：
+/// - 拖拽载荷是 **源 index**；落点是 **目标 index**；交给上层做位移计算。
+/// - 拖动中源 chip 半透明占位（避免列表突然缩短导致目标位置漂移）。
+/// - 目标 chip 上根据相对方向画一条强调色竖线，告诉用户最终插入位置。
+class _DraggableTab extends StatelessWidget {
+  const _DraggableTab({
+    super.key,
+    required this.index,
+    required this.tab,
+    required this.active,
+    required this.onActivate,
+    required this.onClose,
+    required this.onReorder,
+  });
+
+  final int index;
+  final WorkspaceTab tab;
+  final bool active;
+  final VoidCallback onActivate;
+  final VoidCallback onClose;
+  final void Function(int from, int to) onReorder;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final chip = _TabChip(
+      tab: tab,
+      active: active,
+      onActivate: onActivate,
+      onClose: onClose,
+    );
+
+    return DragTarget<int>(
+      onWillAcceptWithDetails: (d) => d.data != index,
+      onAcceptWithDetails: (d) => onReorder(d.data, index),
+      builder: (ctx, candidate, _) {
+        final from = candidate.isNotEmpty ? candidate.first : null;
+        final showLeft = from != null && from > index;
+        final showRight = from != null && from < index;
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Draggable<int>(
+              data: index,
+              axis: Axis.horizontal,
+              feedback: _DragFeedback(tab: tab, active: active),
+              childWhenDragging: Opacity(opacity: 0.3, child: chip),
+              child: chip,
+            ),
+            if (showLeft)
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                child: _DropIndicator(color: palette.accent),
+              ),
+            if (showRight)
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                child: _DropIndicator(color: palette.accent),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _DropIndicator extends StatelessWidget {
+  const _DropIndicator({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(width: 2, color: color);
+  }
+}
+
+class _DragFeedback extends StatelessWidget {
+  const _DragFeedback({required this.tab, required this.active});
+
+  final WorkspaceTab tab;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Material(
+      color: Colors.transparent,
+      child: Opacity(
+        opacity: 0.9,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 120, maxWidth: 220),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: palette.surface,
+              border: Border.all(color: palette.accent.withValues(alpha: 0.6)),
+              borderRadius: BorderRadius.circular(4),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.18),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: SizedBox(
+              height: 32,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    Icon(
+                      tab.kind == WorkspaceTabKind.settings
+                          ? Icons.settings_rounded
+                          : Icons.rocket_launch_rounded,
+                      size: 14,
+                      color: tab.kind == WorkspaceTabKind.settings
+                          ? palette.muted
+                          : palette.info,
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        tab.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight:
+                              active ? FontWeight.w600 : FontWeight.w400,
+                          color: palette.text,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

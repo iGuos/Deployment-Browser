@@ -575,6 +575,19 @@ class WorkspaceController extends Notifier<WorkspaceState> {
     });
   }
 
+  /// 拖拽到目标 tab 时调用：被拖 tab 落到目标位置，目标向相邻方向让位。
+  void reorderTabForAccount(String accountId, int from, int to) {
+    _mutateAccount(accountId, (aw) {
+      if (from == to) return aw;
+      if (from < 0 || from >= aw.tabs.length) return aw;
+      if (to < 0 || to >= aw.tabs.length) return aw;
+      final next = [...aw.tabs];
+      final moved = next.removeAt(from);
+      next.insert(to, moved);
+      return aw.copyWith(tabs: next);
+    });
+  }
+
   void _mutateActive(AccountWorkspace Function(AccountWorkspace) update) {
     final aid = state.activeAccountId;
     if (aid == null) return;

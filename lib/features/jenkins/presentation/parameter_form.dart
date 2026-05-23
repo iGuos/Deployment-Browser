@@ -6,7 +6,12 @@ import '../domain/build_parameter.dart';
 
 /// 加载某个参数的"可选值"集合（典型用例：git 分支历史）。
 /// 失败时应抛异常，UI 会展示「重试」按钮。
-typedef BranchOptionsLoader = Future<List<String>> Function(String paramName);
+///
+/// [forceRefresh] 为 true 时绕过任何缓存层，强制走网络重拉。
+typedef BranchOptionsLoader = Future<List<String>> Function(
+  String paramName, {
+  bool forceRefresh,
+});
 
 /// 动态参数表单：根据 [parameters] 渲染对应输入控件，
 /// 通过 [values] 受控、[onChange] 回调写回。
@@ -320,7 +325,7 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
     }
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool forceRefresh = false}) async {
     final loader = widget.loader;
     if (loader == null) return;
     if (mounted) {
@@ -330,7 +335,10 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
       });
     }
     try {
-      final loaded = await loader(widget.paramName);
+      final loaded = await loader(
+        widget.paramName,
+        forceRefresh: forceRefresh,
+      );
       final merged = <String>{};
       merged.addAll(widget.fixedChoices);
       merged.addAll(loaded);
@@ -468,7 +476,7 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
                     showCount: widget.loader != null,
                     onRefresh: () {
                       _autoSelectedDefault = true;
-                      _load();
+                      _load(forceRefresh: true);
                     },
                     onTapDown: () {
                       // 点 ↓ 图标时主动 focus + 触发 options 重算（清空文本会显示全量）

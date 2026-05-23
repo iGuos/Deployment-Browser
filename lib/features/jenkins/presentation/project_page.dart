@@ -281,12 +281,16 @@ class _LeftPane extends ConsumerWidget {
               parameters: paramsDetail.parameters,
               values: parameterValues,
               onChange: onChangeParameter,
-              branchOptionsLoader: (paramName) async {
+              branchOptionsLoader: (paramName, {bool forceRefresh = false}) async {
                 final repo = ref.read(
                   jenkinsRepositoryForAccountProvider(widget.jenkinsAccountId),
                 );
                 if (repo == null) return const [];
-                return repo.fetchBranchOptions(activeJobFullName, paramName);
+                return repo.fetchBranchOptions(
+                  activeJobFullName,
+                  paramName,
+                  forceRefresh: forceRefresh,
+                );
               },
               onShowReleaseHistory:
                   widget.multibranch && selectedBranchFullName == null

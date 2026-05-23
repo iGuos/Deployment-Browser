@@ -8,6 +8,7 @@ import '../../jenkins/domain/jenkins_build.dart';
 import '../../release/application/release_controller.dart';
 import '../../release/presentation/log_viewer.dart';
 import '../../release/presentation/progress_panel.dart';
+import '../application/branch_defaults_provider.dart';
 import '../data/jenkins_repository.dart';
 import '../data/project_detail_provider.dart';
 import '../domain/build_parameter.dart';
@@ -291,6 +292,20 @@ class _LeftPane extends ConsumerWidget {
                   paramName,
                   forceRefresh: forceRefresh,
                 );
+              },
+              // ref.watch 让星标状态在保存 / 清除后立刻刷新（不只是页面下次进入才更新）
+              branchDefaultGetter: (paramName) => ref
+                  .watch(branchDefaultsProvider(widget.jenkinsAccountId))[activeJobFullName]
+                  ?[paramName],
+              onSaveBranchDefault: (paramName, value) {
+                ref
+                    .read(branchDefaultsProvider(widget.jenkinsAccountId).notifier)
+                    .setDefault(activeJobFullName, paramName, value);
+              },
+              onClearBranchDefault: (paramName) {
+                ref
+                    .read(branchDefaultsProvider(widget.jenkinsAccountId).notifier)
+                    .clearDefault(activeJobFullName, paramName);
               },
               onShowReleaseHistory:
                   widget.multibranch && selectedBranchFullName == null

@@ -22,6 +22,9 @@ class ParameterForm extends StatelessWidget {
     required this.values,
     required this.onChange,
     this.branchOptionsLoader,
+    this.branchDefaultGetter,
+    this.onSaveBranchDefault,
+    this.onClearBranchDefault,
     this.onShowReleaseHistory,
   });
 
@@ -31,6 +34,16 @@ class ParameterForm extends StatelessWidget {
 
   /// 可选：当某个参数被识别为「分支」时，用它去拉候选项；为 null 时仅当作普通输入框。
   final BranchOptionsLoader? branchOptionsLoader;
+
+  /// 可选：读取该参数当前保存的默认分支；null = 未设置。
+  /// 仅对被识别为分支的参数生效。
+  final String? Function(String paramName)? branchDefaultGetter;
+
+  /// 可选：保存某个分支参数的默认值。
+  final void Function(String paramName, String value)? onSaveBranchDefault;
+
+  /// 可选：清除某个分支参数的默认值。
+  final void Function(String paramName)? onClearBranchDefault;
 
   /// 可选：在项目页展示「历史发版记录」入口。
   final VoidCallback? onShowReleaseHistory;
@@ -113,9 +126,22 @@ class ParameterForm extends StatelessWidget {
     // 之所以把这一步放在 switch 之前：分支参数底层 kind 大多数仍是 string/unknown，
     // 用 switch 的话会先被 string 分支 catch 住。
     if (p.isLikelyBranch && branchOptionsLoader != null) {
+      final saved = branchDefaultGetter?.call(p.name);
+      final currentForStar = current;
+      Widget? trailing;
+      if (onSaveBranchDefault != null && onClearBranchDefault != null) {
+        trailing = _BranchDefaultStar(
+          saved: saved,
+          currentValue: currentForStar,
+          onSave: () =>
+              onSaveBranchDefault!(p.name, currentForStar),
+          onClear: () => onClearBranchDefault!(p.name),
+        );
+      }
       child = _LabelWrap(
         label: p.name,
         description: p.description,
+        trailing: trailing,
         child: _OptionsCombobox(
           paramName: p.name,
           defaultValue: p.defaultValue,
@@ -127,6 +153,8 @@ class ParameterForm extends StatelessWidget {
           freeInput: true,
           // 默认值倾向 main/master
           primaryPicker: BuildParameter.pickPrimaryBranch,
+          // 用户保存的偏好优先于 primaryPicker
+          userDefault: saved,
         ),
       );
       return Padding(
@@ -262,6 +290,7 @@ class _OptionsCombobox extends StatefulWidget {
     this.filterable = true,
     this.loader,
     this.primaryPicker,
+    this.userDefault,
     this.iconData = Icons.alt_route_rounded,
   });
 
@@ -289,6 +318,10 @@ class _OptionsCombobox extends StatefulWidget {
   /// 自动选取「优先项」的策略（分支模式用主分支挑选）。
   final PrimaryPicker? primaryPicker;
 
+  /// 用户为该参数保存的"偏好默认值"。
+  /// 优先级高于 [primaryPicker]：有则直接套用，无则回退到主分支策略。
+  final String? userDefault;
+
   final IconData iconData;
 
   @override
@@ -309,13 +342,25 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
   @override
   void initState() {
     super.initState();
-    final initial = widget.currentValue ?? widget.defaultValue;
+    // 初值优先级：父级已有值 > 用户保存的偏好 > Jenkins 默认。
+    // 保存的偏好在 initState 就应用，避免先显示 Jenkins 默认再"闪一下"切到偏好。
+    final userDefault = widget.userDefault;
+    final hasUserDefault = userDefault != null && userDefault.isNotEmpty;
+    final initial = widget.currentValue ??
+        (hasUserDefault ? userDefault : widget.defaultValue);
     _controller = TextEditingController(text: initial);
     _focusNode = FocusNode();
     _focusNode.addListener(_onFocusChanged);
     _options = widget.fixedChoices;
     if (!widget.freeInput && _options.contains(initial)) {
       _lastValid = initial;
+    }
+    if (widget.currentValue == null && hasUserDefault) {
+      _autoSelectedDefault = true;
+      _lastValid = userDefault;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onChange(userDefault);
+      });
     }
     if (widget.loader != null) {
       _load();
@@ -658,11 +703,19 @@ class _ComboboxSuffix extends StatelessWidget {
 }
 
 class _LabelWrap extends StatelessWidget {
-  const _LabelWrap({required this.label, required this.child, this.description});
+  const _LabelWrap({
+    required this.label,
+    required this.child,
+    this.description,
+    this.trailing,
+  });
 
   final String label;
   final String? description;
   final Widget child;
+
+  /// 标签行右侧的操作区（如「设为默认分支」星标按钮）。
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -670,7 +723,21 @@ class _LabelWrap extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: TextStyle(color: palette.text, fontSize: 12.5, fontWeight: FontWeight.w500)),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: palette.text,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            ?trailing,
+          ],
+        ),
         if ((description ?? '').isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 2),
@@ -679,6 +746,62 @@ class _LabelWrap extends StatelessWidget {
         const SizedBox(height: 6),
         child,
       ],
+    );
+  }
+}
+
+/// 「将当前分支保存为该项目的默认分支」星标按钮。
+///
+/// 状态：
+/// - [saved] == null  → 灰色空心星，点击保存 [currentValue]
+/// - [saved] == [currentValue] → 金色实心星，点击清除
+/// - [saved] != null 但与 [currentValue] 不同 → 灰色空心星，点击把保存值替换为当前值
+class _BranchDefaultStar extends StatelessWidget {
+  const _BranchDefaultStar({
+    required this.saved,
+    required this.currentValue,
+    required this.onSave,
+    required this.onClear,
+  });
+
+  final String? saved;
+  final String currentValue;
+  final VoidCallback onSave;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+    final hasSaved = saved != null && saved!.isNotEmpty;
+    final isFilled = hasSaved && saved == currentValue;
+
+    final tooltip = isFilled
+        ? l10n.parameterBranchDefaultClear(saved!)
+        : hasSaved
+            ? l10n.parameterBranchDefaultUpdate(saved!)
+            : l10n.parameterBranchDefaultSave(currentValue);
+
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 300),
+      child: IconButton(
+        onPressed: () {
+          if (isFilled) {
+            onClear();
+          } else if (currentValue.isNotEmpty) {
+            onSave();
+          }
+        },
+        icon: Icon(
+          isFilled ? Icons.star_rounded : Icons.star_outline_rounded,
+          size: 18,
+          color: isFilled ? palette.warning : palette.muted,
+        ),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+        visualDensity: VisualDensity.compact,
+      ),
     );
   }
 }

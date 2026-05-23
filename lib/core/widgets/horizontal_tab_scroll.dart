@@ -49,7 +49,10 @@ class HorizontalPointerScrollWrapper extends StatelessWidget {
   }
 }
 
-/// 带桌面友好滚动的横向列表（内部持有 [ScrollController]）。
+/// 带桌面友好滚动的横向列表。
+///
+/// 默认内部自管 [ScrollController]；外层若想加左右翻页/同步指示，可传入 [controller]
+/// 接管所有权（不会被内部 dispose）。
 class HorizontalScrollStrip extends StatefulWidget {
   const HorizontalScrollStrip({
     super.key,
@@ -57,23 +60,28 @@ class HorizontalScrollStrip extends StatefulWidget {
     required this.itemBuilder,
     this.padding,
     this.physics,
+    this.controller,
   });
 
   final int itemCount;
   final IndexedWidgetBuilder itemBuilder;
   final EdgeInsetsGeometry? padding;
   final ScrollPhysics? physics;
+  final ScrollController? controller;
 
   @override
   State<HorizontalScrollStrip> createState() => _HorizontalScrollStripState();
 }
 
 class _HorizontalScrollStripState extends State<HorizontalScrollStrip> {
-  final ScrollController _controller = ScrollController();
+  ScrollController? _internalController;
+
+  ScrollController get _controller =>
+      widget.controller ?? (_internalController ??= ScrollController());
 
   @override
   void dispose() {
-    _controller.dispose();
+    _internalController?.dispose();
     super.dispose();
   }
 

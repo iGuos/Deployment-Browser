@@ -11,18 +11,67 @@ import '../domain/workspace_tab.dart';
 ///
 /// - 横向滚动；标签 + 关闭按钮；
 /// - 活跃标签使用 `surface` 背景 + 顶部强调色边；
-/// - 没有 tab 时整条栏依然占位，作为内容区与项目树头部之间的视觉分隔。
-class WorkspaceTabBar extends ConsumerWidget {
+/// - 没有 tab 时整条栏依然占位，作为内容区与项目树头部之间的视觉分隔；
+/// - 右侧固定一组工具：← / → 滚动 + ⌄ 批量关闭菜单（关闭当前/其他/全部）。
+class WorkspaceTabBar extends ConsumerStatefulWidget {
   const WorkspaceTabBar({super.key, required this.accountId});
 
   /// 本地 Jenkins 账号 id（对应 [WorkspaceState.byAccount] 的键）。
   final String accountId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<WorkspaceTabBar> createState() => _WorkspaceTabBarState();
+}
+
+class _WorkspaceTabBarState extends ConsumerState<WorkspaceTabBar> {
+  final ScrollController _scroll = ScrollController();
+  bool _canLeft = false;
+  bool _canRight = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_recomputeBounds);
+  }
+
+  @override
+  void dispose() {
+    _scroll.removeListener(_recomputeBounds);
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _recomputeBounds() {
+    if (!mounted || !_scroll.hasClients) return;
+    final pos = _scroll.position;
+    final l = _scroll.offset > pos.minScrollExtent + 0.5;
+    final r = _scroll.offset < pos.maxScrollExtent - 0.5;
+    if (l != _canLeft || r != _canRight) {
+      setState(() {
+        _canLeft = l;
+        _canRight = r;
+      });
+    }
+  }
+
+  void _scrollBy(double delta) {
+    if (!_scroll.hasClients) return;
+    final next = (_scroll.offset + delta).clamp(
+      _scroll.position.minScrollExtent,
+      _scroll.position.maxScrollExtent,
+    );
+    _scroll.animateTo(
+      next,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final palette = context.palette;
     final ws = ref.watch(workspaceProvider);
-    final accountWs = ws.byAccount[accountId];
+    final accountWs = ws.byAccount[widget.accountId];
     final tabs = accountWs?.tabs ?? const <WorkspaceTab>[];
     final tabActiveId = accountWs?.activeId ?? '';
     final notifier = ref.read(workspaceProvider.notifier);
@@ -36,23 +85,196 @@ class WorkspaceTabBar extends ConsumerWidget {
           bottom: BorderSide(color: palette.borderSubtle, width: 0.8),
         ),
       ),
-      child: HorizontalScrollStrip(
-        itemCount: tabs.length,
-        itemBuilder: (ctx, i) {
-          final tab = tabs[i];
-          final active = tab.id == tabActiveId;
-          return _DraggableTab(
-            key: ValueKey(tab.id),
-            index: i,
-            tab: tab,
-            active: active,
-            onActivate: () => notifier.activateTabForAccount(accountId, tab.id),
-            onClose: () => notifier.closeTabForAccount(accountId, tab.id),
-            onReorder: (from, to) =>
-                notifier.reorderTabForAccount(accountId, from, to),
-          );
-        },
+      child: Row(
+        children: [
+          _BarIconButton(
+            icon: Icons.chevron_left_rounded,
+            tooltip: '向左滚动',
+            enabled: _canLeft,
+            onPressed: () => _scrollBy(-220),
+          ),
+          Expanded(
+            child: NotificationListener<ScrollMetricsNotification>(
+              // 内容尺寸 / 视口变化时（添加/关闭 tab、首次布局）由这里兜底，
+              // 因为 ScrollController.addListener 只在滚动位置变化时触发。
+              onNotification: (_) {
+                _recomputeBounds();
+                return false;
+              },
+              child: HorizontalScrollStrip(
+                controller: _scroll,
+                itemCount: tabs.length,
+                itemBuilder: (ctx, i) {
+                  final tab = tabs[i];
+                  final active = tab.id == tabActiveId;
+                  return _DraggableTab(
+                    key: ValueKey(tab.id),
+                    index: i,
+                    tab: tab,
+                    active: active,
+                    onActivate: () => notifier.activateTabForAccount(
+                      widget.accountId,
+                      tab.id,
+                    ),
+                    onClose: () => notifier.closeTabForAccount(
+                      widget.accountId,
+                      tab.id,
+                    ),
+                    onReorder: (from, to) => notifier.reorderTabForAccount(
+                      widget.accountId,
+                      from,
+                      to,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          _BarIconButton(
+            icon: Icons.chevron_right_rounded,
+            tooltip: '向右滚动',
+            enabled: _canRight,
+            onPressed: () => _scrollBy(220),
+          ),
+          _CloseMenuButton(
+            enabled: tabs.isNotEmpty,
+            hasActive: tabActiveId.isNotEmpty,
+            hasOthers: tabs.length > 1,
+            onCloseCurrent: () => tabActiveId.isEmpty
+                ? null
+                : notifier.closeTabForAccount(widget.accountId, tabActiveId),
+            onCloseOthers: () =>
+                tabActiveId.isEmpty ? null : notifier.closeOthers(tabActiveId),
+            onCloseAll: notifier.closeAll,
+          ),
+        ],
       ),
+    );
+  }
+}
+
+/// 紧凑型工具按钮（高度匹配 tab bar）。
+class _BarIconButton extends StatelessWidget {
+  const _BarIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 300),
+      child: SizedBox(
+        width: 32,
+        child: IconButton(
+          onPressed: enabled ? onPressed : null,
+          icon: Icon(icon, size: 18),
+          color: palette.muted,
+          disabledColor: palette.muted.withValues(alpha: 0.35),
+          padding: EdgeInsets.zero,
+          visualDensity: VisualDensity.compact,
+        ),
+      ),
+    );
+  }
+}
+
+enum _CloseMenuAction { current, others, all }
+
+class _CloseMenuButton extends StatelessWidget {
+  const _CloseMenuButton({
+    required this.enabled,
+    required this.hasActive,
+    required this.hasOthers,
+    required this.onCloseCurrent,
+    required this.onCloseOthers,
+    required this.onCloseAll,
+  });
+
+  final bool enabled;
+  final bool hasActive;
+  final bool hasOthers;
+  final VoidCallback onCloseCurrent;
+  final VoidCallback onCloseOthers;
+  final VoidCallback onCloseAll;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Tooltip(
+      message: '更多',
+      waitDuration: const Duration(milliseconds: 300),
+      child: PopupMenuButton<_CloseMenuAction>(
+        enabled: enabled,
+        tooltip: '',
+        position: PopupMenuPosition.under,
+        icon: Icon(Icons.expand_more_rounded, size: 18, color: palette.muted),
+        padding: EdgeInsets.zero,
+        onSelected: (action) {
+          switch (action) {
+            case _CloseMenuAction.current:
+              onCloseCurrent();
+            case _CloseMenuAction.others:
+              onCloseOthers();
+            case _CloseMenuAction.all:
+              onCloseAll();
+          }
+        },
+        itemBuilder: (ctx) => [
+          PopupMenuItem(
+            enabled: hasActive,
+            value: _CloseMenuAction.current,
+            child: const _CloseMenuRow(
+              icon: Icons.close_rounded,
+              label: '关闭当前',
+            ),
+          ),
+          PopupMenuItem(
+            enabled: hasOthers,
+            value: _CloseMenuAction.others,
+            child: const _CloseMenuRow(
+              icon: Icons.tab_unselected_rounded,
+              label: '关闭其他',
+            ),
+          ),
+          PopupMenuItem(
+            value: _CloseMenuAction.all,
+            child: const _CloseMenuRow(
+              icon: Icons.delete_sweep_rounded,
+              label: '关闭全部',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CloseMenuRow extends StatelessWidget {
+  const _CloseMenuRow({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: palette.muted),
+        const SizedBox(width: 10),
+        Text(label, style: TextStyle(color: palette.text, fontSize: 13)),
+      ],
     );
   }
 }

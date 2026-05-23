@@ -545,9 +545,10 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
         return RawAutocomplete<String>(
           textEditingController: _controller,
           focusNode: _focusNode,
-          // 类型筛选不放在这里——这里只跑文本匹配，否则筛选条会让面板因 0 命中而消失。
-          optionsBuilder: (text) =>
-              widget.filterable ? _filterByText(text.text) : _options,
+          // 始终返回 _options 让 Overlay 保持可见；文本过滤+类型过滤都在 optionsViewBuilder
+          // 里做。RawAutocomplete 在 optionsBuilder 返回空时会直接卸掉 Overlay——输入
+          // 不匹配时面板就消失了，所以这里不能在 optionsBuilder 里跑文本过滤。
+          optionsBuilder: (text) => _options,
           onSelected: _onSelected,
           fieldViewBuilder: (ctx, controller, focusNode, onSubmit) {
             final readOnlyDropdown = !widget.freeInput && !widget.filterable;
@@ -588,11 +589,13 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
             return ValueListenableBuilder<RefType?>(
               valueListenable: _typeFilter,
               builder: (ctx, currentFilter, _) {
-                final list = _applyTypeFilter(options, currentFilter);
+                // 文本过滤在这里跑：从 _options 全量出发，按当前输入框文字过滤，
+                // 再叠加类型过滤；最终结果可能为空，但面板保持可见、筛选条仍可点。
+                final byText = widget.filterable
+                    ? _filterByText(_controller.text)
+                    : _options;
+                final list = _applyTypeFilter(byText, currentFilter);
                 final showTypeBar = _hasTypeMix;
-                if (list.isEmpty && !showTypeBar) {
-                  return const SizedBox.shrink();
-                }
                 return Align(
                   alignment: Alignment.topLeft,
                   child: Material(
@@ -618,10 +621,7 @@ class _OptionsComboboxState extends State<_OptionsCombobox> {
                               ),
                             Flexible(
                               child: list.isEmpty
-                                  ? _EmptyHint(
-                                      onClearFilter: () =>
-                                          _typeFilter.value = null,
-                                    )
+                                  ? const _EmptyHint()
                                   : ListView.separated(
                                       padding: const EdgeInsets.symmetric(
                                         vertical: 4,
@@ -922,9 +922,7 @@ class _TypeBadge extends StatelessWidget {
 }
 
 class _EmptyHint extends StatelessWidget {
-  const _EmptyHint({required this.onClearFilter});
-
-  final VoidCallback onClearFilter;
+  const _EmptyHint();
 
   @override
   Widget build(BuildContext context) {
@@ -940,15 +938,6 @@ class _EmptyHint extends StatelessWidget {
               '当前类型筛选下没有匹配项',
               style: TextStyle(color: palette.muted, fontSize: 12),
             ),
-          ),
-          TextButton(
-            onPressed: onClearFilter,
-            style: TextButton.styleFrom(
-              foregroundColor: palette.accent,
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-            ),
-            child: const Text('清除筛选'),
           ),
         ],
       ),

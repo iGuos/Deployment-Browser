@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/locale/app_locale_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/theme_controller.dart';
+import '../../../core/utils/error_log_service.dart';
 import '../../../l10n/app_localizations.dart';
+import 'error_log_viewer.dart';
 import 'proxy_settings_window.dart';
 
 /// 应用级设置：菜单说明、主题、语言、代理。
@@ -133,6 +135,63 @@ class _AppSettingsDialog extends ConsumerWidget {
                 onTap: () async {
                   Navigator.of(context).pop();
                   await openAppProxySettings(context: hostContext);
+                },
+              ),
+              Divider(height: 24, color: palette.borderSubtle),
+              ListenableBuilder(
+                listenable: errorLogService,
+                builder: (ctx, _) {
+                  final count = errorLogService.entries.length;
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Row(
+                      children: [
+                        Text(
+                          l10n.settingsSectionErrorLog,
+                          style: TextStyle(
+                            color: palette.text,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (count > 0) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: palette.danger.withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: palette.danger.withValues(alpha: 0.5),
+                              ),
+                            ),
+                            child: Text(
+                              '$count',
+                              style: TextStyle(
+                                color: palette.danger,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    subtitle: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        l10n.settingsSectionErrorLogHint,
+                        style: TextStyle(color: palette.muted, fontSize: 11.5),
+                      ),
+                    ),
+                    onTap: () async {
+                      Navigator.of(context).pop();
+                      await showErrorLogViewer(hostContext);
+                    },
+                  );
                 },
               ),
             ],

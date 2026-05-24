@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 import 'app.dart';
 import 'core/storage/preferences.dart';
 import 'core/utils/app_logger.dart';
+import 'core/utils/error_log_service.dart';
 import 'core/utils/provider_boot_observer.dart';
 import 'features/settings/presentation/proxy_settings_standalone_app.dart';
 import 'features/settings/presentation/proxy_window_io.dart'
@@ -17,6 +18,7 @@ import 'plug/network_proxy/network_proxy.dart';
 
 Future<void> deploymentMain(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  _installGlobalErrorHandlers();
 
   if (_isDesktopPlatform(defaultTargetPlatform)) {
     try {
@@ -93,6 +95,7 @@ Future<void> deploymentMain(List<String> args) async {
 
   final prefs = await SharedPreferences.getInstance();
   await prefs.reload();
+  await errorLogService.bind(prefs);
   await _resetPersistedProxyListening(prefs);
 
   runApp(
@@ -116,6 +119,27 @@ Future<void> deploymentMain(List<String> args) async {
       child: const DeploymentApp(),
     ),
   );
+}
+
+/// 捕获 Flutter 框架与底层 Dart isolate 抛出的未处理异常，统一落入「异常日志」。
+void _installGlobalErrorHandlers() {
+  final priorFlutterOnError = FlutterError.onError;
+  FlutterError.onError = (FlutterErrorDetails details) {
+    recordAppException(
+      details.summary.toString(),
+      error: details.exception,
+      stackTrace: details.stack,
+    );
+    priorFlutterOnError?.call(details);
+  };
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    recordAppException(
+      'PlatformDispatcher uncaught error',
+      error: error,
+      stackTrace: stack,
+    );
+    return false; // 让默认处理继续生效。
+  };
 }
 
 bool _isDesktopPlatform(TargetPlatform p) =>

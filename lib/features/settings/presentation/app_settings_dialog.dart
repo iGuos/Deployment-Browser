@@ -57,27 +57,34 @@ class _AppSettingsDialog extends ConsumerWidget {
                 title: l10n.settingsSectionTheme,
               ),
               const SizedBox(height: 8),
-              ...ThemeMode.values.map(
-                (m) => Padding(
-                  padding: const EdgeInsets.only(left: 18),
-                  child: RadioListTile<ThemeMode>(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    value: m,
-                    groupValue: themeMode,
-                    title: Text(
-                      switch (m) {
-                        ThemeMode.system => l10n.themeFollowSystem,
-                        ThemeMode.dark => l10n.themeDark,
-                        ThemeMode.light => l10n.themeLight,
-                      },
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                    onChanged: (v) {
-                      if (v == null) return;
-                      ref.read(themeModeProvider.notifier).setMode(v);
-                    },
-                  ),
+              RadioGroup<ThemeMode>(
+                groupValue: themeMode,
+                onChanged: (v) {
+                  if (v == null) return;
+                  ref.read(themeModeProvider.notifier).setMode(v);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: ThemeMode.values
+                      .map(
+                        (m) => Padding(
+                          padding: const EdgeInsets.only(left: 18),
+                          child: RadioListTile<ThemeMode>(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            value: m,
+                            title: Text(
+                              switch (m) {
+                                ThemeMode.system => l10n.themeFollowSystem,
+                                ThemeMode.dark => l10n.themeDark,
+                                ThemeMode.light => l10n.themeLight,
+                              },
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList(),
                 ),
               ),
               Divider(height: 24, color: palette.borderSubtle),
@@ -86,32 +93,34 @@ class _AppSettingsDialog extends ConsumerWidget {
                 title: l10n.settingsSectionLanguage,
               ),
               const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.only(left: 18),
-                child: RadioListTile<Locale>(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  value: const Locale('zh'),
-                  groupValue: locale,
-                  title: Text(l10n.settingsLanguageZh, style: const TextStyle(fontSize: 13)),
-                  onChanged: (v) {
-                    if (v == null) return;
-                    ref.read(appLocaleProvider.notifier).setLocale(v);
-                  },
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(left: 18),
-                child: RadioListTile<Locale>(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  value: const Locale('en'),
-                  groupValue: locale,
-                  title: Text(l10n.settingsLanguageEn, style: const TextStyle(fontSize: 13)),
-                  onChanged: (v) {
-                    if (v == null) return;
-                    ref.read(appLocaleProvider.notifier).setLocale(v);
-                  },
+              RadioGroup<Locale>(
+                groupValue: locale,
+                onChanged: (v) {
+                  if (v == null) return;
+                  ref.read(appLocaleProvider.notifier).setLocale(v);
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 18),
+                      child: RadioListTile<Locale>(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        value: const Locale('zh'),
+                        title: Text(l10n.settingsLanguageZh, style: const TextStyle(fontSize: 13)),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 18),
+                      child: RadioListTile<Locale>(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        value: const Locale('en'),
+                        title: Text(l10n.settingsLanguageEn, style: const TextStyle(fontSize: 13)),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               Divider(height: 24, color: palette.borderSubtle),

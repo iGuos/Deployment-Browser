@@ -302,7 +302,9 @@ class _BuildBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = context.palette;
     final build = state.build!;
-    final progress = build.progress;
+    // 优先用「按阶段」估算的进度（更直观、不会因本次比上次慢就提前到顶）；
+    // 没有上一跑模板时退回到 Jenkins 时间估算。
+    final progress = state.progressByStages ?? build.progress;
     final stages = state.stagesForProgressDisplay;
 
     return Padding(

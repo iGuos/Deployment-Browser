@@ -195,6 +195,39 @@ class ReleaseRunState {
     return mergeBuildStagesForRunning(stageLayoutTemplate, stages);
   }
 
+  /// 基于阶段进度估算整体百分比；只在拿到上一跑模板时才有意义。
+  ///
+  /// Jenkins 的 `estimatedDuration` 是按耗时算的，本次跑比上次慢时进度条会
+  /// 在前几个阶段就接近满格。改用「已完成阶段数 + 当前阶段在模板中的耗时占
+  /// 比」可以更稳：完成多少格就显示多少格。
+  ///
+  /// 模板缺失或还没有任何阶段开始时返回 null，让调用方退回到时间估算。
+  double? get progressByStages {
+    final b = build;
+    if (b == null || !b.building) return null;
+    if (stageLayoutTemplate.isEmpty) return null;
+    final merged = mergeBuildStagesForRunning(stageLayoutTemplate, stages);
+    if (merged.isEmpty) return null;
+    final total = merged.length;
+    final templateByName = <String, BuildStage>{
+      for (final s in stageLayoutTemplate) s.name: s,
+    };
+    double done = 0;
+    for (final s in merged) {
+      if (s.isSuccess || s.isFailed) {
+        done += 1;
+      } else if (s.isRunning) {
+        final t = templateByName[s.name];
+        final expected = (t?.durationMillis ?? 0);
+        final frac = expected > 0
+            ? (s.durationMillis / expected).clamp(0.0, 0.95)
+            : 0.5;
+        done += frac;
+      }
+    }
+    return (done / total).clamp(0.0, 0.98);
+  }
+
   ReleaseRunState copyWith({
     String? queueUrl,
     int? queueItemId,

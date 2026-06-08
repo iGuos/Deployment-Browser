@@ -6,7 +6,11 @@
 
 **仓库：** [github.com/iGuos/Deployment-Browser](https://github.com/iGuos/Deployment-Browser)
 
-简体中文 | English（待补充）
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20iOS%20%C2%B7%20Android-555)
+![Flutter](https://img.shields.io/badge/Flutter-3.41-02569B?logo=flutter&logoColor=white)
+
+文档为简体中文；应用界面支持 **简体中文 / English** 切换。
 
 > 解决 Jenkins Web 页面发版繁琐的痛点：在多标签工作区里集中管理项目，一次性配好分支与参数，一键 Build Now，实时看进度与日志；一套代码同时跑 macOS / Windows / Linux 桌面与 iOS / Android 移动端。
 >
@@ -46,7 +50,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │ 应用标题栏 · 主题切换                                          │
 ├─────────────────────────────────────────────────────────────┤
-│ [首页] [order-service] [+]                  ← chrome 标签栏    │
+│ [order-service] [Jenkins 配置] [+]          ← chrome 标签栏    │
 ├──────────┬──────────────────────────────────────────────────┤
 │  项目树   │  ┌──────────────┐ ┌─────────────────────────┐    │
 │          │  │ 分支选择器     │ │  发版进度面板             │    │
@@ -61,7 +65,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**移动（< 720px）** — AppBar + 表单 + 进度 + BottomNav（构建 / 项目 / 设置）三段式响应式布局。
+**移动（< 720px）** — AppBar + 表单 + 进度 + BottomNav（项目 / 构建 / 账户）三段式响应式布局。
 
 ---
 
@@ -71,12 +75,13 @@
 - **账号导入导出 / 二维码分享**：批量导出账号 JSON 备份或迁移；通过二维码（`qr_flutter` 生成、`mobile_scanner` 扫描）在设备间快速分享账号。
 - **多标签工作区**：Chrome 风格 tab；首页 / 设置 / 项目页可同时打开；状态自动持久化（`shared_preferences`）。
 - **项目树**：递归展示 Folder / MultiBranch / Job；按颜色显示最近构建结果；支持搜索过滤与收藏。
-- **快速发版**：多分支流水线 → 选择分支；参数化项目 → 动态生成表单；一键 Build Now，并可 **取消运行中的构建**。
+- **快速发版**：多分支流水线 → 选择分支；参数化项目 → 动态生成表单；一键 Build Now，并可 **取消运行中的构建**。支持把常用分支设为「默认分支」。
+- **历史发版记录**：按 Job 查看最近构建的参数快照、发版人、Git 提交，便于回溯与复刻发版。
 - **实时进度与日志**：队列等待、构建进度（基于阶段的进度估算）、Pipeline Stage View 阶段图标（成功 / 失败 / 进行中）；`progressiveText` 增量拉取日志，自动滚动，error / warn 关键字着色。
 - **内置网络代理与 HTTPS 解密**：转发代理 + 加密代理链路；动态生成 MITM 根证书用于调试 Jenkins HTTPS；移动端证书信任探测与安装引导。详见 [docs/NETWORK_PROXY_PLUGIN.md](docs/NETWORK_PROXY_PLUGIN.md)。
 - **主题与国际化**：深色 / 浅色 / 跟随系统三档切换；简体中文 / English（`flutter_localizations` + `intl` + ARB）。
 - **响应式布局**：≥ 1100px 桌面侧边栏 + 标签栏；< 720px 移动 BottomNav。
-- **技术栈**：**Flutter 3.x** + **Dart 3.11** + **Riverpod 3** + **dio** + **go_router**。
+- **技术栈**：**Flutter 3.41** + **Dart 3.11** + **Riverpod 3**（状态管理）+ **dio** + **dio_cookie_manager / cookie_jar**（CSRF 会话）+ **window_manager / desktop_multi_window**（桌面多窗口）。标签/页面切换用轻量 Tab 状态机管理（非 go_router）。
 
 ---
 
@@ -211,7 +216,7 @@ lib/
 构建产物路径：
 
 ```bash
-flutter build macos      # → build/macos/Build/Products/Release/Deployment.app
+flutter build macos      # → build/macos/Build/Products/Release/deployment.app
 flutter build windows    # → build/windows/runner/Release/
 flutter build linux      # → build/linux/x64/release/bundle/
 flutter build apk        # → build/app/outputs/flutter-apk/app-release.apk
@@ -231,8 +236,6 @@ flutter build web        # → build/web/
 
 ## 路线图 / TODO
 
-- [ ] 标签拖拽排序持久化
-- [ ] 项目页加入「构建历史」面板
 - [ ] 桌面端原生通知（构建完成 / 失败）
 - [ ] 移动端推送（构建状态变化）
 - [ ] 自定义状态栏快捷指标 / 主题色自定义
@@ -241,6 +244,24 @@ flutter build web        # → build/web/
 
 ---
 
+## 截图复现（演示数据）
+
+上方截图全部来自本地 mock，不依赖真实 Jenkins。复现方式：
+
+```bash
+# 1. 启动 mock Jenkins（零依赖，返回演示项目树 / 参数 / 进行中的构建 / 日志）
+python3 tool/demo/mock_jenkins.py 8732
+
+# 2. 以演示入口运行（自动注入演示账号、打开项目页并触发一次构建）
+flutter run -d macos -t tool/demo/demo_main.dart \
+  --dart-define=DEMO_PORT=8732 --dart-define=DEMO_SCREEN=project \
+  --dart-define=DEMO_W=1380 --dart-define=DEMO_H=880
+```
+
+`DEMO_SCREEN=settings` 可直接打开设置页；`DEMO_W` / `DEMO_H` 调小到 < 720 宽即进入移动端布局。演示入口用内存版 `SharedPreferences` 注入数据，**不读写真实钥匙串或用户数据**。
+
+---
+
 ## License
 
-待补充。
+本项目以 **MIT License** 开源，详见 [LICENSE](LICENSE)。Copyright © 2026 Guo's。

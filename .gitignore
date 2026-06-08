@@ -12,7 +12,8 @@ build/
 *.freezed.dart
 *.gen.dart
 lib/generated/
-lib/l10n/
+# 只忽略 gen-l10n 生成物，ARB 源文件（app_*.arb）须纳入版本控制，否则 clean clone 无法编译
+lib/l10n/app_localizations*.dart
 
 # IntelliJ / Android Studio
 .idea/
@@ -97,3 +98,11 @@ dist/
 # Logs
 *.log
 logs/
+
+# Test coverage
+coverage/
+*.lcov
+
+# Tooling
+.fvm/
+devtools_options.yaml

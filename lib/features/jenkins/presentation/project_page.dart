@@ -5,6 +5,7 @@ import '../../../core/responsive/breakpoints.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../jenkins/domain/jenkins_build.dart';
+import '../../notifications/slack/slack_notifier.dart';
 import '../../release/application/release_controller.dart';
 import '../../release/presentation/log_viewer.dart';
 import '../../release/presentation/progress_panel.dart';
@@ -38,6 +39,9 @@ class ProjectPage extends ConsumerStatefulWidget {
 class _ProjectPageState extends ConsumerState<ProjectPage> {
   String? _selectedBranchFullName;
   Map<String, String> _parameterValues = {};
+
+  /// 本次发版选定的 Slack 通知人（从设置候选池里挑；为空则不通知）。
+  List<SlackRecipient> _notifyTargets = const [];
 
   String get _activeJobFullName =>
       widget.multibranch && _selectedBranchFullName != null
@@ -113,6 +117,8 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
                   onRefresh: invalidateDetail,
                   activeJobFullName: _activeJobFullName,
                   activeRun: runTabs.activeRun,
+                  notifyTargets: _notifyTargets,
+                  onNotifyTargetsChanged: (v) => setState(() => _notifyTargets = v),
                 );
                 final right = _RightPane(
                   runs: runTabs.runs,
@@ -175,7 +181,7 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
         .read(projectRunTabsProvider(_runTabsKey).notifier)
         .addRun(_activeJobFullName);
     final controller = ref.read(releaseControllerProvider(handle).notifier);
-    await controller.trigger(parameters: merged);
+    await controller.trigger(parameters: merged, slackRecipients: _notifyTargets);
   }
 }
 
@@ -192,6 +198,8 @@ class _LeftPane extends ConsumerWidget {
     required this.onRefresh,
     required this.activeJobFullName,
     required this.activeRun,
+    required this.notifyTargets,
+    required this.onNotifyTargetsChanged,
   });
 
   /// 多分支目录：分支列表、是否 multibranch。
@@ -211,6 +219,10 @@ class _LeftPane extends ConsumerWidget {
   /// 当前活动 tab 对应的 run。仅用于按钮 loading 态显示——避免在
   /// 「正在触发新 run」时让用户多次点击。
   final RunHandle? activeRun;
+
+  /// 本次发版选定的通知人 + 变更回调。
+  final List<SlackRecipient> notifyTargets;
+  final ValueChanged<List<SlackRecipient>> onNotifyTargetsChanged;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -352,6 +364,20 @@ class _LeftPane extends ConsumerWidget {
                         jobFullName: activeJobFullName,
                       );
                     },
+            ),
+            Consumer(
+              builder: (ctx, ref2, _) {
+                final slackCfg = ref2.watch(slackConfigProvider);
+                if (!slackCfg.isConfigured) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: _NotifyTargetField(
+                    pool: slackCfg.recipients,
+                    selected: notifyTargets,
+                    onChanged: onNotifyTargetsChanged,
+                  ),
+                );
+              },
             ),
             const SizedBox(height: 18),
             FilledButton.icon(
@@ -683,6 +709,149 @@ class _ErrorState extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// 「构建完成通知」选择框：从设置的候选池里多选本次要私信的人。
+class _NotifyTargetField extends StatelessWidget {
+  const _NotifyTargetField({
+    required this.pool,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final List<SlackRecipient> pool;
+  final List<SlackRecipient> selected;
+  final ValueChanged<List<SlackRecipient>> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.notifications_active_outlined, size: 15, color: palette.info),
+            const SizedBox(width: 8),
+            Text(l10n.projectNotifyLabel,
+                style: TextStyle(color: palette.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () async {
+            final result = await showDialog<List<SlackRecipient>>(
+              context: context,
+              builder: (_) => _PoolPickerDialog(pool: pool, initial: selected),
+            );
+            if (result != null) onChanged(result);
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: palette.surfaceRaised,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: palette.border),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: selected.isEmpty
+                      ? Text(l10n.projectNotifyPick,
+                          style: TextStyle(color: palette.muted, fontSize: 13))
+                      : Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final r in selected)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: palette.info.withValues(alpha: 0.14),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Text(r.label,
+                                    style: TextStyle(color: palette.text, fontSize: 12)),
+                              ),
+                          ],
+                        ),
+                ),
+                Icon(Icons.arrow_drop_down_rounded, color: palette.muted),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 从候选池多选（本地数据,无网络请求）。
+class _PoolPickerDialog extends StatefulWidget {
+  const _PoolPickerDialog({required this.pool, required this.initial});
+
+  final List<SlackRecipient> pool;
+  final List<SlackRecipient> initial;
+
+  @override
+  State<_PoolPickerDialog> createState() => _PoolPickerDialogState();
+}
+
+class _PoolPickerDialogState extends State<_PoolPickerDialog> {
+  late final Map<String, SlackRecipient> _selected = {
+    for (final r in widget.initial) r.id: r,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+    final size = MediaQuery.sizeOf(context);
+    return AlertDialog(
+      title: Text(l10n.projectNotifyPick),
+      content: SizedBox(
+        width: 380,
+        height: (size.height * 0.5).clamp(220.0, 460.0),
+        child: widget.pool.isEmpty
+            ? Center(
+                child: Text(l10n.slackNoRecipients,
+                    style: TextStyle(color: palette.muted, fontSize: 12)))
+            : ListView.builder(
+                itemCount: widget.pool.length,
+                itemBuilder: (c, i) {
+                  final r = widget.pool[i];
+                  return CheckboxListTile(
+                    dense: true,
+                    value: _selected.containsKey(r.id),
+                    title: Text(r.label, style: const TextStyle(fontSize: 13)),
+                    subtitle: r.email.isNotEmpty
+                        ? Text(r.email, style: TextStyle(color: palette.muted, fontSize: 10.5))
+                        : null,
+                    onChanged: (v) => setState(() {
+                      if (v == true) {
+                        _selected[r.id] = r;
+                      } else {
+                        _selected.remove(r.id);
+                      }
+                    }),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(l10n.commonCancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _selected.values.toList()),
+          child: Text('${l10n.commonConfirm} (${_selected.length})'),
+        ),
+      ],
     );
   }
 }

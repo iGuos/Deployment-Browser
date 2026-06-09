@@ -9,6 +9,7 @@ import '../../../core/notifications/build_notifier.dart';
 import '../../../core/notifications/notifications_settings.dart';
 import '../../jenkins/data/jenkins_repository.dart';
 import '../../jenkins/domain/jenkins_build.dart';
+import '../../notifications/slack/slack_notifier.dart';
 
 /// 一次"运行实例"的标识。
 ///
@@ -305,12 +306,21 @@ class ReleaseController extends Notifier<ReleaseRunState> {
     _queuePollTimer = null;
   }
 
+  /// 本次发版选定的 Slack 通知接收人（为空则不发 Slack）。
+  List<SlackRecipient> _slackRecipients = const [];
+
   /// 触发一次新构建。
   ///
   /// 设计原则：**保留旧的 build / buildNumber / stages 仍可见**，只重置队列状态与错误。
   /// 等队列轮询拿到新的 build number 时才会替换旧的。这样在 Jenkins 还没分配 executor
   /// 之前，用户依旧能看到上一次构建的进度 / 结果。
-  Future<void> trigger({Map<String, String> parameters = const {}}) async {
+  ///
+  /// [slackRecipients]：本次构建结束时要私信的人（来自发版页选择）。
+  Future<void> trigger({
+    Map<String, String> parameters = const {},
+    List<SlackRecipient> slackRecipients = const [],
+  }) async {
+    _slackRecipients = slackRecipients;
     final repo = _repo();
     if (repo == null) return;
     _queuePollTimer?.cancel();
@@ -601,6 +611,14 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       title: jobFullName,
       body: '#$number · $status',
     ));
+
+    // Slack 通知：私信本次发版选定的人（为空则不发），按设置过滤成功/失败。
+    unawaited(ref.read(slackNotifierProvider).notifyBuildResult(
+          recipients: _slackRecipients,
+          jobFullName: jobFullName,
+          number: number,
+          result: build.resultEnum,
+        ));
   }
 
   /// 从 `https://.../queue/item/12345/` 中抽出数字 id（仅展示用途）。

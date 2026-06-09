@@ -6,7 +6,6 @@ import 'package:deployment/features/settings/domain/jenkins_config.dart';
 import 'package:deployment/features/workspace/application/workspace_controller.dart';
 import 'package:deployment/features/workspace/domain/workspace_tab.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -31,7 +30,6 @@ void main() {
 
     setUp(() async {
       SharedPreferences.setMockInitialValues({});
-      FlutterSecureStorage.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();
       container = ProviderContainer(
         overrides: [

@@ -2,13 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- 调试期：禁用 App Sandbox 以便钥匙串访问与本地网络调试。 -->
-	<!-- 上 App Store / 公开发版时再使用 Release.entitlements。 -->
+	<!-- 开启 App Sandbox，与 Release 一致：debug 与正式版读同一个偏好/数据容器，账号配置共用。 -->
+	<!-- 这也是 Flutter 默认的 macOS debug 配置（sandbox + JIT + 本地网络），热重载/VM Service 正常。 -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
+	<!-- VM Service / DDS 调试通道与内置转发代理监听 -->
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- 访问 Jenkins / 内置代理出站 -->
 	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- 账号导入导出（file_selector） -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- 扫码导入账号（mobile_scanner） -->
+	<key>com.apple.security.device.camera</key>
 	<true/>
 </dict>
 </plist>

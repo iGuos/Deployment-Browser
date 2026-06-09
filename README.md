@@ -40,6 +40,12 @@
 
 <p align="center"><em>设置页：Jenkins 地址 / 鉴权方式（Token / 密码）配置、测试连接、主题与语言、内置网络代理入口。</em></p>
 
+<p align="center">
+  <img src="docs/images/app-stage-cards.png" alt="Deployment Browser — Pipeline 阶段横向卡片视图 + 自定义强调色" width="820" />
+</p>
+
+<p align="center"><em>Pipeline 阶段「横向卡片流程图」视图（Checkout → Build → Unit Test → … 用箭头连接）+ 自定义主题强调色（此处为紫色）。</em></p>
+
 ---
 
 ## 界面布局
@@ -71,13 +77,14 @@
 
 ## 核心特性
 
-- **多账号 Jenkins 配置**：URL + 用户名 + Token / 密码二选一；测试连接；本地凭证走 **系统钥匙串**（`flutter_secure_storage`）。支持多实例并存、命名切换。
+- **多账号 Jenkins 配置**：URL + 用户名 + Token / 密码二选一；测试连接；凭证以 **本地 AES-GCM 加密**后存储（不依赖系统钥匙串）。支持多实例并存、命名切换。
 - **账号导入导出 / 二维码分享**：批量导出账号 JSON 备份或迁移；通过二维码（`qr_flutter` 生成、`mobile_scanner` 扫描）在设备间快速分享账号。
 - **多标签工作区**：Chrome 风格 tab；首页 / 设置 / 项目页可同时打开；状态自动持久化（`shared_preferences`）。
 - **项目树**：递归展示 Folder / MultiBranch / Job；按颜色显示最近构建结果；支持搜索过滤与收藏。
 - **快速发版**：多分支流水线 → 选择分支；参数化项目 → 动态生成表单；一键 Build Now，并可 **取消运行中的构建**。支持把常用分支设为「默认分支」。
 - **历史发版记录**：按 Job 查看最近构建的参数快照、发版人、Git 提交，便于回溯与复刻发版。
-- **实时进度与日志**：队列等待、构建进度（基于阶段的进度估算）、Pipeline Stage View 阶段图标（成功 / 失败 / 进行中）；`progressiveText` 增量拉取日志，自动滚动，error / warn 关键字着色。
+- **实时进度与日志**：队列等待、构建进度（基于阶段的进度估算）、Pipeline Stage View 阶段图标（成功 / 失败 / 进行中）；阶段支持 **纵向列表 / 横向卡片流程图** 两种视图切换；`progressiveText` 增量拉取日志，自动滚动，error / warn 关键字着色。
+- **构建结束通知**：构建成功 / 失败时弹本地系统通知（桌面 macOS·Linux + 移动 iOS·Android，App 前台运行时；Windows 暂不支持）。可在设置里开关。
 - **内置网络代理与 HTTPS 解密**：转发代理 + 加密代理链路；动态生成 MITM 根证书用于调试 Jenkins HTTPS；移动端证书信任探测与安装引导。详见 [docs/NETWORK_PROXY_PLUGIN.md](docs/NETWORK_PROXY_PLUGIN.md)。
 - **主题与国际化**：深色 / 浅色 / 跟随系统三档切换；简体中文 / English（`flutter_localizations` + `intl` + ARB）。
 - **响应式布局**：≥ 1100px 桌面侧边栏 + 标签栏；< 720px 移动 BottomNav。
@@ -138,7 +145,7 @@ pnpm verify                    # 一键验收：flutter test + dart analyze
 1. **API Token（推荐）**：Jenkins → 右上角用户名 → **Configure** → **API Token** → 添加新 Token，复制到本应用「凭证」字段。
 2. **用户名 + 密码**：直接使用 Jenkins 登录密码（未启用二步验证时）。
 
-> 凭证只保存在 **本机系统钥匙串**（macOS / iOS Keychain、Android Keystore、Windows DPAPI），不会上传任何远程服务。
+> 凭证经 **本地 AES-GCM-256 加密**后保存在本机（密文 + 随机主密钥都存于本地，见 `lib/core/storage/encrypted_secret_store.dart`），不使用系统钥匙串,也不会上传任何远程服务。
 
 ---
 
@@ -228,7 +235,8 @@ flutter build web        # → build/web/
 
 ## 安全说明
 
-- 凭证仅存于本机 **系统钥匙串**，不上传任何远程服务。
+- 凭证以 **AES-GCM-256 本地加密**存储(`EncryptedSecretStore`),不上传任何远程服务;不再使用系统钥匙串。
+  > 注:主密钥与密文同存本机,属**本地加密**——可防止配置被明文直接读取,但无法抵御能完整访问本机文件的攻击者。需要更强保护可改为「用户主密码派生密钥」。
 - MITM 根证书与私钥保存在本机用户目录，且不纳入版本控制；重新生成根证书后旧站点证书缓存自动失效并重建。
 - Basic Auth 凭证在请求时即时注入，不持久化到日志或缓存。
 
@@ -236,10 +244,10 @@ flutter build web        # → build/web/
 
 ## 路线图 / TODO
 
-- [ ] 桌面端原生通知（构建完成 / 失败）
-- [ ] 移动端推送（构建状态变化）
-- [ ] 自定义状态栏快捷指标 / 主题色自定义
-- [ ] 暗色 Pipeline 阶段流程图（横向卡片视图）
+- [x] 桌面端原生通知（构建完成 / 失败）
+- [x] 自定义状态栏快捷指标 / 主题色自定义
+- [x] Pipeline 阶段横向卡片流程图视图
+- [ ] 移动端**离线**推送（App 关闭时也能收到；需独立服务端监听 Jenkins + FCM/APNs，当前仅支持前台运行时的本地通知）
 - [ ] GitHub Actions 自动出 Release 包
 
 ---

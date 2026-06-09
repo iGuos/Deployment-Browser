@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/locale/app_locale_controller.dart';
+import '../../../core/notifications/notifications_settings.dart';
+import '../../../core/theme/accent_color_controller.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/theme_controller.dart';
 import '../../../core/utils/error_log_service.dart';
@@ -87,6 +89,11 @@ class _AppSettingsDialog extends ConsumerWidget {
                       .toList(),
                 ),
               ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.only(left: 18),
+                child: _AccentColorRow(),
+              ),
               Divider(height: 24, color: palette.borderSubtle),
               _SectionHeader(
                 icon: Icons.translate_rounded,
@@ -123,6 +130,12 @@ class _AppSettingsDialog extends ConsumerWidget {
                   ],
                 ),
               ),
+              Divider(height: 24, color: palette.borderSubtle),
+              _SectionHeader(
+                icon: Icons.notifications_active_outlined,
+                title: l10n.settingsSectionNotifications,
+              ),
+              _NotificationsToggle(),
               Divider(height: 24, color: palette.borderSubtle),
               _SectionTile(
                 icon: Icons.vpn_lock_rounded,
@@ -182,6 +195,91 @@ class _AppSettingsDialog extends ConsumerWidget {
           child: Text(l10n.commonClose),
         ),
       ],
+    );
+  }
+}
+
+/// 主题强调色选择：默认 + 一排预设色，点选即时生效并持久化。
+class _AccentColorRow extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+    final current = ref.watch(accentColorProvider);
+
+    Widget swatch({required Color? color, required bool selected}) {
+      final display = color ?? palette.accent;
+      return InkWell(
+        onTap: () => ref.read(accentColorProvider.notifier).setAccent(color),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          width: 26,
+          height: 26,
+          decoration: BoxDecoration(
+            color: color == null ? Colors.transparent : display,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: selected ? palette.text : palette.borderSubtle,
+              width: selected ? 2 : 1,
+            ),
+          ),
+          child: color == null
+              ? Icon(Icons.format_color_reset_outlined, size: 14, color: palette.muted)
+              : (selected ? const Icon(Icons.check, size: 14, color: Colors.white) : null),
+        ),
+      );
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(
+          l10n.settingsAccentColor,
+          style: TextStyle(color: palette.muted, fontSize: 12.5),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              swatch(color: null, selected: current == null),
+              for (final c in kAccentColorPresets)
+                swatch(
+                  color: c,
+                  selected: current != null && current.toARGB32() == c.toARGB32(),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 构建结束通知开关。
+class _NotificationsToggle extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+    final enabled = ref.watch(notificationsEnabledProvider);
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: SwitchListTile(
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+        value: enabled,
+        onChanged: (v) => ref.read(notificationsEnabledProvider.notifier).setEnabled(v),
+        title: Text(
+          l10n.settingsNotificationsBuildResult,
+          style: const TextStyle(fontSize: 13),
+        ),
+        subtitle: Text(
+          l10n.settingsNotificationsHint,
+          style: TextStyle(color: palette.muted, fontSize: 11.5, height: 1.35),
+        ),
+      ),
     );
   }
 }

@@ -11,6 +11,8 @@
 //        --dart-define=DEMO_W=1380 --dart-define=DEMO_H=880
 //
 // DEMO_SCREEN: project（默认，自动触发一次构建以展示进度/日志）| settings
+//
+// ignore_for_file: invalid_use_of_visible_for_testing_member
 import 'dart:async';
 
 import 'dart:convert';
@@ -21,16 +23,27 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:deployment/app.dart';
+import 'package:deployment/core/notifications/build_notifier.dart';
 import 'package:deployment/core/storage/preferences.dart';
 import 'package:deployment/features/release/application/release_controller.dart';
 import 'package:deployment/features/settings/data/jenkins_accounts_repository.dart';
 import 'package:deployment/plug/network_proxy/application/network_proxy_application.dart';
-import 'package:deployment/plug/network_proxy/network_proxy.dart';
 
 const _port = int.fromEnvironment('DEMO_PORT', defaultValue: 8732);
 const _screen = String.fromEnvironment('DEMO_SCREEN', defaultValue: 'project');
 const _winW = int.fromEnvironment('DEMO_W', defaultValue: 1380);
 const _winH = int.fromEnvironment('DEMO_H', defaultValue: 880);
+
+// 布尔开关：dart-define 传 1 / true / yes 均视为开。
+// 注意：String.fromEnvironment 必须用字面量名作 const 调用，故逐个声明。
+const _envNoNotif = String.fromEnvironment('DEMO_NO_NOTIF');
+const _envStageCards = String.fromEnvironment('DEMO_STAGE_CARDS');
+const _envNotify = String.fromEnvironment('DEMO_NOTIFY');
+
+bool _truthy(String v) {
+  final s = v.toLowerCase();
+  return s == '1' || s == 'true' || s == 'yes';
+}
 
 String get _baseUrl => 'http://127.0.0.1:$_port';
 
@@ -80,7 +93,7 @@ Map<String, Object> _seedPrefs() {
   };
 
   // 注意：legacy 版 SharedPreferences 的 mock 需要 'flutter.' 前缀。
-  return {
+  final seed = <String, Object>{
     'flutter.jenkins.accounts.list_v1': jsonEncode(accounts),
     'flutter.jenkins.accounts.active_id': _prodId,
     'flutter.jenkins.accounts.secret_fallback.$_prodId': 'demo-api-token',
@@ -91,6 +104,15 @@ Map<String, Object> _seedPrefs() {
     'flutter.app.theme_mode': 'dark',
     'flutter.app.locale_code': 'zh',
   };
+  // 演示开关：横向阶段卡片视图 / 自定义强调色（ARGB int 十六进制，如 0xFF7C5CFC）。
+  if (_truthy(_envStageCards)) {
+    seed['flutter.app.stage_view_mode'] = 'cards';
+  }
+  const accentHex = String.fromEnvironment('DEMO_ACCENT');
+  if (accentHex.isNotEmpty) {
+    seed['flutter.app.accent_color'] = int.parse(accentHex);
+  }
+  return seed;
 }
 
 Future<void> main() async {
@@ -115,6 +137,10 @@ Future<void> main() async {
     // 非桌面或初始化失败时忽略，仍以默认窗口启动。
   }
 
+  if (!_truthy(_envNoNotif)) {
+    await initBuildNotifications();
+  }
+
   SharedPreferences.setMockInitialValues(_seedPrefs());
   final prefs = await SharedPreferences.getInstance();
 
@@ -135,6 +161,13 @@ Future<void> main() async {
 
   if (_screen != 'settings') {
     unawaited(_autoTriggerDemoBuild(container));
+  }
+
+  // 演示通知:DEMO_NOTIFY=1 时启动几秒后弹一条样例「构建结束」通知,验证原生通知链路。
+  if (_truthy(_envNotify)) {
+    unawaited(Future<void>.delayed(const Duration(seconds: 4), () {
+      showBuildResultNotification(title: 'backend/order-service', body: '#128 · 构建成功');
+    }));
   }
 }
 

@@ -2,43 +2,43 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/storage/encrypted_secret_store.dart';
 import '../../../core/storage/preferences.dart';
-import '../../../core/storage/secure_storage.dart';
 import '../../../core/utils/app_logger.dart';
 import '../domain/jenkins_account.dart';
 import '../domain/jenkins_config.dart';
 
 const _kAccountsList = 'jenkins.accounts.list_v1';
 const _kActiveAccountId = 'jenkins.accounts.active_id';
-const _kSecretPrefix = 'jenkins.accounts.secret.';
+
+// 旧版明文回落键（flutter_secure_storage 不可用时曾用过）。仅用于一次性迁移到加密存储。
 const _kSecretFallbackPrefix = 'jenkins.accounts.secret_fallback.';
 
 // 老版（单账号）兼容 key —— 用作"首次启动迁移到默认账号"的来源。
 const _kLegacyBaseUrl = 'jenkins.base_url';
 const _kLegacyUsername = 'jenkins.username';
 const _kLegacyAuthKind = 'jenkins.auth_kind';
-const _kLegacySecret = 'jenkins.secret';
 const _kLegacySecretFallback = 'jenkins.secret_fallback';
 const _kLegacyAccountId = 'default';
 
 /// 多账号持久化仓储。
 ///
 /// - 账号元数据（id / name / baseUrl / username / authKind）以 JSON 数组写入 SharedPreferences；
-/// - 每个账号的 secret 单独写到 secure storage（`jenkins.accounts.secret.{id}`），
-///   secure storage 不可用时回落到 SharedPreferences 中的同名 fallback key。
+/// - 每个账号的 secret 用 [EncryptedSecretStore] 做**本地 AES 加密**后存入 SharedPreferences
+///   （不再使用系统钥匙串 / Keystore）；
+/// - 读取时若发现旧版明文回落键（`jenkins.accounts.secret_fallback.{id}`）会一次性迁移到加密存储并清除明文。
 /// - 启动时若发现没有账号但存在老的单账号 key，会迁移成 id="default" 的账号。
 class JenkinsAccountsRepository {
   JenkinsAccountsRepository({
     required SharedPreferences prefs,
-    required FlutterSecureStorage secure,
+    required EncryptedSecretStore secrets,
   })  : _prefs = prefs,
-        _secure = secure;
+        _secrets = secrets;
 
   final SharedPreferences _prefs;
-  final FlutterSecureStorage _secure;
+  final EncryptedSecretStore _secrets;
 
   Future<({List<JenkinsAccount> accounts, String? activeId})> read() async {
     final raw = _prefs.getString(_kAccountsList);
@@ -117,10 +117,11 @@ class JenkinsAccountsRepository {
 
   Future<void> deleteSecret(String accountId) async {
     try {
-      await _secure.delete(key: '$_kSecretPrefix$accountId');
+      await _secrets.delete(accountId);
     } catch (e) {
-      appLogger.w('删除 secure storage 失败（已忽略）: $e');
+      appLogger.w('删除加密凭证失败（已忽略）: $e');
     }
+    // 顺便清除可能残留的旧版明文回落。
     await _prefs.remove('$_kSecretFallbackPrefix$accountId');
   }
 
@@ -133,26 +134,21 @@ class JenkinsAccountsRepository {
   }
 
   Future<void> _writeSecret(String accountId, String secret) async {
-    final key = '$_kSecretPrefix$accountId';
-    final fbKey = '$_kSecretFallbackPrefix$accountId';
-    try {
-      await _secure.write(key: key, value: secret);
-      await _prefs.remove(fbKey);
-    } catch (e) {
-      appLogger.w('secure storage 不可用，账号 $accountId 凭证回落到普通本地存储: $e');
-      await _prefs.setString(fbKey, secret);
-      try {
-        await _secure.delete(key: key);
-      } catch (_) {/* ignore */}
-    }
+    await _secrets.write(accountId, secret);
+    // 写入加密存储后，清掉历史明文回落键（如果有）。
+    await _prefs.remove('$_kSecretFallbackPrefix$accountId');
   }
 
   Future<String?> _readSecret(String accountId) async {
-    try {
-      final v = await _secure.read(key: '$_kSecretPrefix$accountId');
-      if (v != null && v.isNotEmpty) return v;
-    } catch (_) {/* fallthrough */}
-    return _prefs.getString('$_kSecretFallbackPrefix$accountId');
+    final v = await _secrets.read(accountId);
+    if (v != null && v.isNotEmpty) return v;
+    // 迁移：旧版明文回落 → 加密存储（一次性）。
+    final legacy = _prefs.getString('$_kSecretFallbackPrefix$accountId');
+    if (legacy != null && legacy.isNotEmpty) {
+      await _writeSecret(accountId, legacy);
+      return legacy;
+    }
+    return null;
   }
 
   /// 从 v0 单账号布局里迁移一条记录到多账号布局。
@@ -160,11 +156,8 @@ class JenkinsAccountsRepository {
     final baseUrl = _prefs.getString(_kLegacyBaseUrl);
     final username = _prefs.getString(_kLegacyUsername);
     final authKind = _prefs.getString(_kLegacyAuthKind);
-    String? secret;
-    try {
-      secret = await _secure.read(key: _kLegacySecret);
-    } catch (_) {/* ignore */}
-    secret ??= _prefs.getString(_kLegacySecretFallback);
+    // 旧版单账号的 secret 仅从明文键迁移（已不再使用钥匙串）。
+    final secret = _prefs.getString(_kLegacySecretFallback);
 
     final cfg = JenkinsConfig.fromPartial(
       baseUrl: baseUrl,
@@ -189,7 +182,7 @@ class JenkinsAccountsRepository {
 final jenkinsAccountsRepositoryProvider = Provider<JenkinsAccountsRepository>((ref) {
   return JenkinsAccountsRepository(
     prefs: ref.watch(sharedPreferencesProvider),
-    secure: ref.watch(secureStorageProvider),
+    secrets: ref.watch(encryptedSecretStoreProvider),
   );
 });
 

@@ -218,5 +218,21 @@
   "workspacePickerTitle": "Open workspace",
   "workspaceStatusNoWorkspace": "No workspace open",
   "workspaceStatusOpenTabs": "{count} tabs",
-  "@workspaceStatusOpenTabs": { "placeholders": { "count": { "type": "int" } } }
+  "@workspaceStatusOpenTabs": { "placeholders": { "count": { "type": "int" } } },
+
+  "buildStageViewList": "List",
+  "buildStageViewCards": "Cards",
+
+  "settingsAccentColor": "Accent color",
+  "settingsSectionNotifications": "Notifications",
+  "settingsNotificationsBuildResult": "Notify when a build finishes",
+  "settingsNotificationsHint": "Pop a local notification on build success / failure (while the app is in the foreground). True offline mobile push needs a backend and is not supported.",
+
+  "statusBarMetricsTooltip": "Status bar metrics",
+  "statusMetricConnection": "Connection",
+  "statusMetricProject": "Active project",
+  "statusMetricWorkspaces": "Workspaces",
+  "statusMetricTabs": "Tabs",
+  "statusWorkspacesCount": "{count} workspaces",
+  "@statusWorkspacesCount": { "placeholders": { "count": { "type": "int" } } }
 }

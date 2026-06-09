@@ -6,9 +6,16 @@ import 'app_colors.dart';
 class AppTheme {
   const AppTheme._();
 
-  static ThemeData dark() => _build(brightness: Brightness.dark, palette: AppPalette.dark);
+  /// [accent] 非空时覆盖内置强调色（用户自定义主题色）。
+  static ThemeData dark({Color? accent}) => _build(
+        brightness: Brightness.dark,
+        palette: accent == null ? AppPalette.dark : AppPalette.dark.copyWith(accent: accent),
+      );
 
-  static ThemeData light() => _build(brightness: Brightness.light, palette: AppPalette.light);
+  static ThemeData light({Color? accent}) => _build(
+        brightness: Brightness.light,
+        palette: accent == null ? AppPalette.light : AppPalette.light.copyWith(accent: accent),
+      );
 
   static ThemeData _build({
     required Brightness brightness,

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
+import 'core/notifications/build_notifier.dart';
 import 'core/storage/preferences.dart';
 import 'core/utils/app_logger.dart';
 import 'core/utils/error_log_service.dart';
@@ -97,6 +98,7 @@ Future<void> deploymentMain(List<String> args) async {
   await prefs.reload();
   await errorLogService.bind(prefs);
   await _resetPersistedProxyListening(prefs);
+  await initBuildNotifications();
 
   runApp(
     ProviderScope(

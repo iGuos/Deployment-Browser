@@ -24,7 +24,6 @@ dependencies:
   dio: ^5.9.2
 
   # 本地存储
-  flutter_secure_storage: ^10.1.0
   shared_preferences: ^2.5.5
 
   # 平台能力
@@ -46,6 +45,7 @@ dependencies:
   desktop_multi_window: ^0.3.0
   basic_utils: ^5.8.2
   crypto: ^3.0.7
+  flutter_local_notifications: ^22.0.0
 
 dev_dependencies:
   flutter_test:

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/locale/app_locale_controller.dart';
+import 'core/theme/accent_color_controller.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_controller.dart';
 import 'features/settings/application/network_proxy_embedded_server_binding.dart';
@@ -43,13 +44,14 @@ class _DeploymentAppState extends ConsumerState<DeploymentApp> with WidgetsBindi
     ref.watch(networkProxyEmbeddedServerBindingProvider);
     final mode = ref.watch(themeModeProvider);
     final locale = ref.watch(appLocaleProvider);
+    final accent = ref.watch(accentColorProvider);
     return MaterialApp(
       title: 'Deployment',
       debugShowCheckedModeBanner: false,
       locale: locale,
       themeMode: mode,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
+      theme: AppTheme.light(accent: accent),
+      darkTheme: AppTheme.dark(accent: accent),
       localizationsDelegates: AppL10n.localizationsDelegates,
       supportedLocales: AppL10n.supportedLocales,
       home: const WorkspaceShell(),

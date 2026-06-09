@@ -1,5 +1,6 @@
 import 'package:deployment/app.dart';
 import 'package:deployment/core/storage/preferences.dart';
+import 'package:deployment/plug/network_proxy/application/network_proxy_application.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +15,10 @@ void main() {
       ProviderScope(
         overrides: [
           sharedPreferencesProvider.overrideWithValue(prefs),
+          networkProxySharedPreferencesProvider.overrideWithValue(prefs),
+          networkProxyLoggerProvider.overrideWithValue(
+            (message, {error, stackTrace}) {},
+          ),
         ],
         child: const DeploymentApp(),
       ),

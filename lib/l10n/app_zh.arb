@@ -218,5 +218,21 @@
   "workspacePickerTitle": "打开工作区",
   "workspaceStatusNoWorkspace": "未打开工作区",
   "workspaceStatusOpenTabs": "{count} 个标签",
-  "@workspaceStatusOpenTabs": { "placeholders": { "count": { "type": "int" } } }
+  "@workspaceStatusOpenTabs": { "placeholders": { "count": { "type": "int" } } },
+
+  "buildStageViewList": "列表",
+  "buildStageViewCards": "卡片",
+
+  "settingsAccentColor": "强调色",
+  "settingsSectionNotifications": "通知",
+  "settingsNotificationsBuildResult": "构建结束通知",
+  "settingsNotificationsHint": "构建成功 / 失败时弹出本地通知（App 在前台运行时）。移动端离线推送需独立服务端,暂不支持。",
+
+  "statusBarMetricsTooltip": "显示指标",
+  "statusMetricConnection": "连接状态",
+  "statusMetricProject": "当前项目",
+  "statusMetricWorkspaces": "工作区数",
+  "statusMetricTabs": "标签数",
+  "statusWorkspacesCount": "{count} 个工作区",
+  "@statusWorkspacesCount": { "placeholders": { "count": { "type": "int" } } }
 }

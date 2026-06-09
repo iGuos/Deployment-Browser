@@ -8,6 +8,7 @@ import '../../../core/utils/duration_formatter.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../jenkins/domain/jenkins_build.dart';
 import '../application/release_controller.dart';
+import '../application/stage_view_mode_provider.dart';
 
 class ProgressPanel extends ConsumerStatefulWidget {
   const ProgressPanel({super.key, required this.handle});
@@ -293,19 +294,22 @@ class _QueueBody extends StatelessWidget {
   }
 }
 
-class _BuildBody extends StatelessWidget {
+class _BuildBody extends ConsumerWidget {
   const _BuildBody({required this.state});
 
   final ReleaseRunState state;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final palette = context.palette;
+    final l10n = AppL10n.of(context);
     final build = state.build!;
     // 优先用「按阶段」估算的进度（更直观、不会因本次比上次慢就提前到顶）；
     // 没有上一跑模板时退回到 Jenkins 时间估算。
     final progress = state.progressByStages ?? build.progress;
     final stages = state.stagesForProgressDisplay;
+    final viewMode = ref.watch(stageViewModeProvider);
+    final buildEnded = !build.building;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
@@ -325,16 +329,169 @@ class _BuildBody extends StatelessWidget {
           ),
           if (stages.isNotEmpty) ...[
             const SizedBox(height: 14),
-            Text(
-              AppL10n.of(context).buildStages,
-              style: TextStyle(color: palette.muted, fontSize: 11.5, fontWeight: FontWeight.w600, letterSpacing: 0.4),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    l10n.buildStages,
+                    style: TextStyle(
+                      color: palette.muted,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ),
+                _StageViewToggle(
+                  mode: viewMode,
+                  onChanged: (m) => ref.read(stageViewModeProvider.notifier).setMode(m),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
-            ...stages.map((s) => _StageRow(stage: s, buildEnded: !build.building)),
+            if (viewMode == StageViewMode.cards)
+              _StageCards(stages: stages, buildEnded: buildEnded)
+            else
+              ...stages.map((s) => _StageRow(stage: s, buildEnded: buildEnded)),
           ],
         ],
       ),
     );
+  }
+}
+
+/// 阶段视图切换：列表 / 横向卡片。
+class _StageViewToggle extends StatelessWidget {
+  const _StageViewToggle({required this.mode, required this.onChanged});
+
+  final StageViewMode mode;
+  final ValueChanged<StageViewMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+
+    Widget btn(StageViewMode m, IconData icon, String tip) {
+      final selected = mode == m;
+      return Tooltip(
+        message: tip,
+        child: InkWell(
+          onTap: () => onChanged(m),
+          borderRadius: BorderRadius.circular(5),
+          child: Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: selected ? palette.accent.withValues(alpha: 0.16) : Colors.transparent,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Icon(icon, size: 14, color: selected ? palette.accent : palette.muted),
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        btn(StageViewMode.list, Icons.view_list_rounded, l10n.buildStageViewList),
+        const SizedBox(width: 4),
+        btn(StageViewMode.cards, Icons.view_column_rounded, l10n.buildStageViewCards),
+      ],
+    );
+  }
+}
+
+/// 横向卡片流程图：阶段从左到右排成卡片，卡片间用箭头连接。
+class _StageCards extends StatelessWidget {
+  const _StageCards({required this.stages, required this.buildEnded});
+
+  final List<BuildStage> stages;
+  final bool buildEnded;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          for (var i = 0; i < stages.length; i++) ...[
+            if (i > 0)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Icon(Icons.chevron_right_rounded, size: 18, color: palette.muted),
+              ),
+            _StageCard(stage: stages[i], buildEnded: buildEnded),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StageCard extends StatelessWidget {
+  const _StageCard({required this.stage, required this.buildEnded});
+
+  final BuildStage stage;
+  final bool buildEnded;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final showAsRunning = stage.isRunning && !buildEnded;
+    final accent = _accent(palette);
+
+    return Container(
+      width: 140,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: showAsRunning ? 0.14 : 0.07),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: showAsRunning ? accent.withValues(alpha: 0.7) : palette.borderSubtle,
+          width: showAsRunning ? 1.4 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              _StageIcon(stage: stage, buildEnded: buildEnded, size: 15),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  stage.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: palette.text,
+                    fontSize: 12,
+                    fontWeight: showAsRunning ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            formatDurationShort(stage.durationMillis),
+            style: TextStyle(color: palette.muted, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _accent(AppPalette p) {
+    if (stage.isSuccess) return p.success;
+    if (stage.isFailed) return p.danger;
+    if (stage.isRunning && !buildEnded) return p.running;
+    return p.muted;
   }
 }
 
@@ -351,13 +508,12 @@ class _StageRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
-    final ic = _icon(stage, palette);
     final showAsRunning = stage.isRunning && !buildEnded;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          ic,
+          _StageIcon(stage: stage, buildEnded: buildEnded, size: 16),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -377,21 +533,37 @@ class _StageRow extends StatelessWidget {
       ),
     );
   }
+}
 
-  Widget _icon(BuildStage s, AppPalette p) {
-    if (s.isSuccess) {
-      return Icon(Icons.check_circle_rounded, size: 16, color: p.success);
+/// 阶段状态图标（列表行与横向卡片共用）。
+class _StageIcon extends StatelessWidget {
+  const _StageIcon({
+    required this.stage,
+    required this.buildEnded,
+    this.size = 16,
+  });
+
+  final BuildStage stage;
+  final bool buildEnded;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    if (stage.isSuccess) {
+      return Icon(Icons.check_circle_rounded, size: size, color: p.success);
     }
-    if (s.isFailed) {
-      return Icon(Icons.cancel_rounded, size: 16, color: p.danger);
+    if (stage.isFailed) {
+      return Icon(Icons.cancel_rounded, size: size, color: p.danger);
     }
-    if (s.isRunning && !buildEnded) {
+    if (stage.isRunning && !buildEnded) {
       return SizedBox(
-        width: 16, height: 16,
+        width: size,
+        height: size,
         child: CircularProgressIndicator(strokeWidth: 2, color: p.running),
       );
     }
     // build 已结束 / 该 stage 未执行：显示中性占位
-    return Icon(Icons.radio_button_unchecked_rounded, size: 16, color: p.muted);
+    return Icon(Icons.radio_button_unchecked_rounded, size: size, color: p.muted);
   }
 }

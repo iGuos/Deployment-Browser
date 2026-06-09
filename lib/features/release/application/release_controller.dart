@@ -4,6 +4,9 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/locale/app_locale_controller.dart';
+import '../../../core/notifications/build_notifier.dart';
+import '../../../core/notifications/notifications_settings.dart';
 import '../../jenkins/data/jenkins_repository.dart';
 import '../../jenkins/domain/jenkins_build.dart';
 
@@ -543,6 +546,10 @@ class ReleaseController extends Notifier<ReleaseRunState> {
     final repo = _repo();
     if (repo == null) return;
     try {
+      // 记录本次拉取前「这个 build 是否正被观察为运行中」，用于只在
+      // 运行中 → 结束 的真实跳变时弹通知（避免回看历史构建时误弹）。
+      final wasBuilding =
+          state.buildNumber == number && state.build?.building == true;
       final build = await repo.fetchBuild(state.jobFullName, number);
       List<BuildStage> stages = state.stages;
       if (build.building || stages.isEmpty) {
@@ -550,6 +557,7 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       }
       state = state.copyWith(build: build, stages: stages, clearError: true);
       if (!build.building) {
+        if (wasBuilding) _notifyBuildFinished(number, build);
         _buildPollTimer?.cancel();
         _buildPollTimer = null;
         // build 整体已结束，但 wfapi/describe 偶尔还没把最后一个隐式 stage
@@ -573,6 +581,26 @@ class ReleaseController extends Notifier<ReleaseRunState> {
     } catch (e) {
       state = state.copyWith(errorMessage: e.toString());
     }
+  }
+
+  /// 构建结束（运行中 → 完成）时弹一条本地通知。
+  ///
+  /// 由 [notificationsEnabledProvider] 控制开关；文案按当前界面语言生成。
+  /// 不支持的平台（Web / Windows）底层为 no-op。
+  void _notifyBuildFinished(int number, JenkinsBuild build) {
+    if (!ref.read(notificationsEnabledProvider)) return;
+    final isZh = ref.read(appLocaleProvider).languageCode == 'zh';
+    final status = switch (build.resultEnum) {
+      BuildResult.success => isZh ? '构建成功' : 'Build succeeded',
+      BuildResult.failure => isZh ? '构建失败' : 'Build failed',
+      BuildResult.unstable => isZh ? '构建不稳定' : 'Build unstable',
+      BuildResult.aborted => isZh ? '构建已终止' : 'Build aborted',
+      _ => isZh ? '构建结束' : 'Build finished',
+    };
+    unawaited(showBuildResultNotification(
+      title: jobFullName,
+      body: '#$number · $status',
+    ));
   }
 
   /// 从 `https://.../queue/item/12345/` 中抽出数字 id（仅展示用途）。

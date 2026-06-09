@@ -328,6 +328,7 @@ class _LogViewerState extends ConsumerState<LogViewer> {
     required ScrollController? scrollController,
     required VoidCallback? onExpand,
     required VoidCallback? onPanelChanged,
+    VoidCallback? onClose,
   }) {
     final palette = context.palette;
     final colors = _LogViewerColors.of(context);
@@ -368,6 +369,7 @@ class _LogViewerState extends ConsumerState<LogViewer> {
             },
             onViewModeChanged: onViewModeChanged,
             onExpand: onExpand,
+            onClose: onClose,
             onFilterChanged: onPanelChanged,
           ),
           if (viewMode == _LogViewMode.table) const _NetworkHeader(),
@@ -418,11 +420,16 @@ class _LogViewerState extends ConsumerState<LogViewer> {
               return ValueListenableBuilder<int>(
                 valueListenable: _panelRevision,
                 builder: (context, _, _) {
+                  // 占屏幕 90%；MediaQuery.sizeOf 会在窗口缩放时触发重建，随之变化。
                   final size = MediaQuery.sizeOf(context);
                   return Dialog(
+                    insetPadding: EdgeInsets.symmetric(
+                      horizontal: size.width * 0.05,
+                      vertical: size.height * 0.05,
+                    ),
                     child: SizedBox(
-                      width: math.min(1180, size.width - 56),
-                      height: math.min(760, size.height - 56),
+                      width: size.width * 0.9,
+                      height: size.height * 0.9,
                       child: _buildLogPanel(
                         context,
                         viewMode: dialogMode,
@@ -433,6 +440,7 @@ class _LogViewerState extends ConsumerState<LogViewer> {
                           if (_autoScroll) _jumpToEnd();
                         },
                         onExpand: null,
+                        onClose: () => Navigator.of(dialogContext).pop(),
                         onPanelChanged: () {
                           _notifyPanelChanged();
                           setDialogState(() {});
@@ -554,6 +562,7 @@ class _NetworkToolbar extends StatelessWidget {
     required this.onViewModeChanged,
     required this.onExpand,
     required this.onFilterChanged,
+    this.onClose,
   });
 
   final String title;
@@ -573,6 +582,7 @@ class _NetworkToolbar extends StatelessWidget {
   final ValueChanged<_LogViewMode> onViewModeChanged;
   final VoidCallback? onExpand;
   final VoidCallback? onFilterChanged;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -720,6 +730,12 @@ class _NetworkToolbar extends StatelessWidget {
                   tooltip: '放大日志',
                   icon: Icons.open_in_full_rounded,
                   onPressed: onExpand,
+                ),
+              if (onClose != null)
+                _ToolbarIconButton(
+                  tooltip: '关闭',
+                  icon: Icons.close_rounded,
+                  onPressed: onClose,
                 ),
             ],
           );

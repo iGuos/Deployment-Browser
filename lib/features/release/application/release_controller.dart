@@ -611,26 +611,30 @@ class ReleaseController extends Notifier<ReleaseRunState> {
     }
   }
 
-  /// 构建结束（运行中 → 完成）时弹一条本地通知。
+  /// 构建结束（运行中 → 完成）时发通知。
   ///
-  /// 由 [notificationsEnabledProvider] 控制开关；文案按当前界面语言生成。
-  /// 不支持的平台（Web / Windows）底层为 no-op。
+  /// 两个通道相互独立：
+  /// - 本地系统通知：由 [notificationsEnabledProvider] 控制（默认关、需系统权限）；
+  /// - Slack 私信：由 Slack 配置自身控制（选了接收人 + 成功/失败开关），
+  ///   不受本地通知开关影响——否则关掉本地通知会连 Slack 一起静默。
   void _notifyBuildFinished(int number, JenkinsBuild build) {
-    if (!ref.read(notificationsEnabledProvider)) return;
-    final isZh = ref.read(appLocaleProvider).languageCode == 'zh';
-    final status = switch (build.resultEnum) {
-      BuildResult.success => isZh ? '构建成功' : 'Build succeeded',
-      BuildResult.failure => isZh ? '构建失败' : 'Build failed',
-      BuildResult.unstable => isZh ? '构建不稳定' : 'Build unstable',
-      BuildResult.aborted => isZh ? '构建已终止' : 'Build aborted',
-      _ => isZh ? '构建结束' : 'Build finished',
-    };
-    unawaited(showBuildResultNotification(
-      title: _notifyJobName,
-      body: '#$number · $status',
-    ));
+    // 本地系统通知
+    if (ref.read(notificationsEnabledProvider)) {
+      final isZh = ref.read(appLocaleProvider).languageCode == 'zh';
+      final status = switch (build.resultEnum) {
+        BuildResult.success => isZh ? '构建成功' : 'Build succeeded',
+        BuildResult.failure => isZh ? '构建失败' : 'Build failed',
+        BuildResult.unstable => isZh ? '构建不稳定' : 'Build unstable',
+        BuildResult.aborted => isZh ? '构建已终止' : 'Build aborted',
+        _ => isZh ? '构建结束' : 'Build finished',
+      };
+      unawaited(showBuildResultNotification(
+        title: _notifyJobName,
+        body: '#$number · $status',
+      ));
+    }
 
-    // Slack 通知：私信本次发版选定的人（为空则不发），按设置过滤成功/失败。
+    // Slack 私信：发给本次发版选定的人（为空则不发），按设置过滤成功/失败。
     unawaited(ref.read(slackNotifierProvider).notifyBuildResult(
           recipients: _slackRecipients,
           jobFullName: _notifyJobName,

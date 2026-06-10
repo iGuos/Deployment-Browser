@@ -38,11 +38,12 @@ class _AppSettingsDialog extends ConsumerWidget {
     final palette = context.palette;
     final themeMode = ref.watch(themeModeProvider);
     final locale = ref.watch(appLocaleProvider);
+    final size = MediaQuery.sizeOf(context);
 
     return AlertDialog(
       title: Text(l10n.settingsDialogTitle),
       content: SizedBox(
-        width: 440,
+        width: math.min(620, size.width - 80),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -290,6 +291,8 @@ class _SlackSettingsDialogState extends ConsumerState<_SlackSettingsDialog> {
 
   final _tokenCtrl = TextEditingController();
   final _tokenFocus = FocusNode();
+  final _successTplCtrl = TextEditingController();
+  final _failureTplCtrl = TextEditingController();
   bool _obscure = true;
   bool _testing = false;
   bool _checking = false;
@@ -302,10 +305,13 @@ class _SlackSettingsDialogState extends ConsumerState<_SlackSettingsDialog> {
   @override
   void initState() {
     super.initState();
-    if (ref.read(slackConfigProvider).hasToken) {
+    final cfg = ref.read(slackConfigProvider);
+    if (cfg.hasToken) {
       _tokenCtrl.text = _tokenMask;
       _tokenMasked = true;
     }
+    _successTplCtrl.text = cfg.successTemplate;
+    _failureTplCtrl.text = cfg.failureTemplate;
     _tokenFocus.addListener(_onTokenFocusChange);
   }
 
@@ -333,6 +339,8 @@ class _SlackSettingsDialogState extends ConsumerState<_SlackSettingsDialog> {
     _tokenFocus.removeListener(_onTokenFocusChange);
     _tokenFocus.dispose();
     _tokenCtrl.dispose();
+    _successTplCtrl.dispose();
+    _failureTplCtrl.dispose();
     super.dispose();
   }
 
@@ -398,6 +406,139 @@ class _SlackSettingsDialogState extends ConsumerState<_SlackSettingsDialog> {
     }
   }
 
+  /// 弹出占位符参考表：占位符 / 含义 / 示例值。
+  Future<void> _showPlaceholderHelp() async {
+    final l10n = AppL10n.of(context);
+    final palette = context.palette;
+    final rows = <(String, String, String)>[
+      ('{job}', l10n.slackPlaceholderJob, 'mcp-skills/next'),
+      ('{number}', l10n.slackPlaceholderNumber, '114'),
+      ('{result}', l10n.slackPlaceholderResult, l10n.slackPlaceholderResultExample),
+      ('{emoji}', l10n.slackPlaceholderEmoji, '✅ / ❌'),
+      ('{duration}', l10n.slackPlaceholderDuration, '4m49s'),
+      ('{url}', l10n.slackPlaceholderUrl, 'https://…/job/…/114/'),
+    ];
+
+    TableRow headerRow() => TableRow(
+          decoration: BoxDecoration(color: palette.surfaceRaised),
+          children: [
+            for (final h in [
+              l10n.slackPlaceholderColToken,
+              l10n.slackPlaceholderColMeaning,
+              l10n.slackPlaceholderColExample,
+            ])
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                child: Text(h,
+                    style: TextStyle(
+                        color: palette.text,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600)),
+              ),
+          ],
+        );
+
+    TableRow dataRow(String token, String meaning, String example) => TableRow(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Text(token,
+                  style: TextStyle(
+                      color: palette.accent,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w600)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Text(meaning,
+                  style: TextStyle(color: palette.text, fontSize: 12)),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Text(example,
+                  style: TextStyle(color: palette.muted, fontSize: 12)),
+            ),
+          ],
+        );
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.slackPlaceholderTitle),
+        content: SingleChildScrollView(
+          child: Table(
+            border: TableBorder.all(
+              color: palette.borderSubtle,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            columnWidths: const {
+              0: IntrinsicColumnWidth(),
+              1: IntrinsicColumnWidth(),
+              2: FlexColumnWidth(),
+            },
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+            children: [
+              headerRow(),
+              for (final r in rows) dataRow(r.$1, r.$2, r.$3),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l10n.commonClose),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 单条消息模板编辑器：输入框 + 恢复默认按钮；随所属开关启用 / 置灰。
+  Widget _templateField({
+    required AppPalette palette,
+    required String label,
+    required String resetTip,
+    required TextEditingController controller,
+    required bool enabled,
+    required ValueChanged<String> onChanged,
+    required VoidCallback onReset,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 28, top: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: TextField(
+              controller: controller,
+              enabled: enabled,
+              minLines: 1,
+              maxLines: 3,
+              style: const TextStyle(fontSize: 12.5),
+              onChanged: onChanged,
+              decoration: InputDecoration(
+                isDense: true,
+                labelText: label,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              ),
+            ),
+          ),
+          Tooltip(
+            message: resetTip,
+            child: IconButton(
+              onPressed: enabled ? onReset : null,
+              icon: const Icon(Icons.restart_alt_rounded, size: 16),
+              color: palette.muted,
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
@@ -409,7 +550,7 @@ class _SlackSettingsDialogState extends ConsumerState<_SlackSettingsDialog> {
     return AlertDialog(
       title: Text(l10n.settingsSectionSlack),
       content: SizedBox(
-        width: math.min(480, size.width - 80),
+        width: math.min(640, size.width - 80),
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -562,32 +703,71 @@ class _SlackSettingsDialogState extends ConsumerState<_SlackSettingsDialog> {
                 ),
               ),
               const SizedBox(height: 18),
-              _slackGroupLabel(palette, l10n.slackGroupTriggers),
-              const SizedBox(height: 4),
-              // success / failure toggles
               Row(
                 children: [
                   Expanded(
-                    child: CheckboxListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      value: cfg.notifySuccess,
-                      onChanged: (v) => ctrl.setNotifySuccess(v ?? true),
-                      title: Text(l10n.slackNotifySuccess, style: const TextStyle(fontSize: 12.5)),
-                    ),
+                    child: _slackGroupLabel(palette, l10n.slackGroupTriggers),
                   ),
-                  Expanded(
-                    child: CheckboxListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      value: cfg.notifyFailure,
-                      onChanged: (v) => ctrl.setNotifyFailure(v ?? true),
-                      title: Text(l10n.slackNotifyFailure, style: const TextStyle(fontSize: 12.5)),
+                  Tooltip(
+                    message: l10n.slackPlaceholderTitle,
+                    child: IconButton(
+                      onPressed: _showPlaceholderHelp,
+                      icon: const Icon(Icons.info_outline_rounded, size: 16),
+                      color: palette.muted,
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      constraints:
+                          const BoxConstraints.tightFor(width: 28, height: 28),
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 4),
+              Text(l10n.slackTemplateHint,
+                  style: TextStyle(color: palette.muted, fontSize: 11, height: 1.4)),
+              const SizedBox(height: 8),
+              // 成功：开关 + 自定义模板
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: cfg.notifySuccess,
+                onChanged: (v) => ctrl.setNotifySuccess(v ?? true),
+                title: Text(l10n.slackNotifySuccess, style: const TextStyle(fontSize: 12.5)),
+              ),
+              _templateField(
+                palette: palette,
+                label: l10n.slackTemplateSuccessLabel,
+                resetTip: l10n.slackTemplateReset,
+                controller: _successTplCtrl,
+                enabled: cfg.notifySuccess,
+                onChanged: ctrl.setSuccessTemplate,
+                onReset: () {
+                  _successTplCtrl.text = kDefaultSlackSuccessTemplate;
+                  ctrl.setSuccessTemplate(kDefaultSlackSuccessTemplate);
+                },
+              ),
+              const SizedBox(height: 6),
+              // 失败：开关 + 自定义模板
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: cfg.notifyFailure,
+                onChanged: (v) => ctrl.setNotifyFailure(v ?? true),
+                title: Text(l10n.slackNotifyFailure, style: const TextStyle(fontSize: 12.5)),
+              ),
+              _templateField(
+                palette: palette,
+                label: l10n.slackTemplateFailureLabel,
+                resetTip: l10n.slackTemplateReset,
+                controller: _failureTplCtrl,
+                enabled: cfg.notifyFailure,
+                onChanged: ctrl.setFailureTemplate,
+                onReset: () {
+                  _failureTplCtrl.text = kDefaultSlackFailureTemplate;
+                  ctrl.setFailureTemplate(kDefaultSlackFailureTemplate);
+                },
               ),
             ],
           ),
@@ -967,12 +1147,81 @@ class _StatusPill extends StatelessWidget {
 }
 
 /// 构建结束通知开关。
-class _NotificationsToggle extends ConsumerWidget {
+///
+/// 默认关闭；开启前必须先有系统通知权限。无权限时：开关无法打开，转而弹出
+/// 引导，引导用户到系统设置授权。
+class _NotificationsToggle extends ConsumerStatefulWidget {
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_NotificationsToggle> createState() =>
+      _NotificationsToggleState();
+}
+
+class _NotificationsToggleState extends ConsumerState<_NotificationsToggle> {
+  /// null = 检测中；true / false = 是否已获得系统通知权限。
+  bool? _permitted;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshPermission();
+  }
+
+  Future<void> _refreshPermission() async {
+    final ok = await hasBuildNotificationPermission();
+    if (mounted) setState(() => _permitted = ok);
+  }
+
+  Future<void> _onToggle(bool v) async {
+    final ctrl = ref.read(notificationsEnabledProvider.notifier);
+    if (!v) {
+      // 关闭随时允许。
+      await ctrl.setEnabled(false);
+      return;
+    }
+    // 想开启：先确认（必要时请求）系统权限。
+    var ok = await hasBuildNotificationPermission();
+    if (!ok) ok = await requestBuildNotificationPermission();
+    if (mounted) setState(() => _permitted = ok);
+    if (ok) {
+      await ctrl.setEnabled(true);
+    } else if (mounted) {
+      // 无权限：不开启，弹出引导配置。
+      await _showPermissionGuide();
+    }
+  }
+
+  Future<void> _showPermissionGuide() async {
+    final l10n = AppL10n.of(context);
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.settingsNotificationsPermissionTitle),
+        content: Text(l10n.settingsNotificationsPermissionBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(l10n.commonCancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(l10n.settingsNotificationsOpenSettings),
+          ),
+        ],
+      ),
+    );
+    if (go == true) {
+      await openSystemNotificationSettings();
+      // 用户从系统设置返回后，重新读一次权限状态。
+      await _refreshPermission();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final palette = context.palette;
     final l10n = AppL10n.of(context);
     final enabled = ref.watch(notificationsEnabledProvider);
+    final permitted = _permitted;
     return Padding(
       padding: const EdgeInsets.only(left: 8),
       child: Column(
@@ -981,8 +1230,9 @@ class _NotificationsToggle extends ConsumerWidget {
           SwitchListTile(
             dense: true,
             contentPadding: const EdgeInsets.symmetric(horizontal: 10),
-            value: enabled,
-            onChanged: (v) => ref.read(notificationsEnabledProvider.notifier).setEnabled(v),
+            // 没有权限时视觉上保持关闭，并阻止通过开关直接打开。
+            value: enabled && permitted != false,
+            onChanged: _onToggle,
             title: Text(
               l10n.settingsNotificationsBuildResult,
               style: const TextStyle(fontSize: 13),
@@ -992,22 +1242,52 @@ class _NotificationsToggle extends ConsumerWidget {
               style: TextStyle(color: palette.muted, fontSize: 11.5, height: 1.35),
             ),
           ),
+          if (permitted == false)
+            Padding(
+              padding: const EdgeInsets.only(left: 10, top: 2, bottom: 2),
+              child: Row(
+                children: [
+                  Icon(Icons.error_outline_rounded, size: 14, color: palette.warning),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      l10n.settingsNotificationsNoPermission,
+                      style: TextStyle(color: palette.warning, fontSize: 11.5, height: 1.35),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Align(
             alignment: Alignment.centerLeft,
             child: Padding(
               padding: const EdgeInsets.only(left: 10, top: 2),
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  await initBuildNotifications();
-                  await showBuildResultNotification(
-                    title: 'Deployment',
-                    body: l10n.settingsNotificationsTestBody,
-                  );
-                  if (!context.mounted) return;
-                  showTopToast(context, l10n.settingsNotificationsTestSent);
-                },
-                icon: const Icon(Icons.notifications_active_outlined, size: 15),
-                label: Text(l10n.settingsNotificationsTest),
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 6,
+                children: [
+                  if (permitted == false)
+                    OutlinedButton.icon(
+                      onPressed: _showPermissionGuide,
+                      icon: const Icon(Icons.settings_outlined, size: 15),
+                      label: Text(l10n.settingsNotificationsGuide),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      await initBuildNotifications();
+                      await showBuildResultNotification(
+                        title: 'Deployment',
+                        body: l10n.settingsNotificationsTestBody,
+                      );
+                      // 测试发送会暴露真实权限状态，顺手刷新一次。
+                      await _refreshPermission();
+                      if (!context.mounted) return;
+                      showTopToast(context, l10n.settingsNotificationsTestSent);
+                    },
+                    icon: const Icon(Icons.notifications_active_outlined, size: 15),
+                    label: Text(l10n.settingsNotificationsTest),
+                  ),
+                ],
               ),
             ),
           ),

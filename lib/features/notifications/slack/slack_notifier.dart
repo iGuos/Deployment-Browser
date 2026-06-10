@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/storage/encrypted_secret_store.dart';
 import '../../../core/storage/preferences.dart';
 import '../../../core/utils/app_logger.dart';
+import '../../../core/utils/duration_formatter.dart';
 import '../../jenkins/domain/jenkins_build.dart';
 
 // ── 持久化键 ──────────────────────────────────────────────
@@ -15,7 +16,35 @@ const _kRecipientsV1 = 'slack.recipients_v1';
 const _kRecipientLegacy = 'slack.recipient'; // 旧版单接收人，仅用于迁移
 const _kNotifySuccess = 'slack.notify_success';
 const _kNotifyFailure = 'slack.notify_failure';
+const _kSuccessTemplate = 'slack.success_template';
+const _kFailureTemplate = 'slack.failure_template';
 const _kHasToken = 'slack.has_token';
+
+/// 构建结束通知文案的默认模板。支持占位符（见 [renderSlackMessage]）：
+/// `{emoji}` `{job}` `{number}` `{result}` `{duration}` `{url}`。
+const kDefaultSlackSuccessTemplate = '✅ *{job}* #{number} {result}';
+const kDefaultSlackFailureTemplate = '❌ *{job}* #{number} {result}';
+
+/// 把模板里的占位符替换成本次构建的实际值；模板为空白时回退到 [fallback]。
+String renderSlackMessage(
+  String template, {
+  required String job,
+  required int number,
+  required String result,
+  required String emoji,
+  required String duration,
+  required String url,
+  required String fallback,
+}) {
+  final t = template.trim().isEmpty ? fallback : template;
+  return t
+      .replaceAll('{emoji}', emoji)
+      .replaceAll('{job}', job)
+      .replaceAll('{number}', number.toString())
+      .replaceAll('{result}', result)
+      .replaceAll('{duration}', duration)
+      .replaceAll('{url}', url);
+}
 
 /// Slack user token 在加密存储里的逻辑键。
 const _kSlackTokenKey = 'slack.user_token';
@@ -60,6 +89,8 @@ class SlackConfig {
     this.recipients = const [],
     this.notifySuccess = true,
     this.notifyFailure = true,
+    this.successTemplate = kDefaultSlackSuccessTemplate,
+    this.failureTemplate = kDefaultSlackFailureTemplate,
     this.hasToken = false,
   });
 
@@ -67,6 +98,10 @@ class SlackConfig {
   final List<SlackRecipient> recipients;
   final bool notifySuccess;
   final bool notifyFailure;
+
+  /// 成功 / 失败时的自定义消息模板（支持占位符，见 [renderSlackMessage]）。
+  final String successTemplate;
+  final String failureTemplate;
 
   /// 是否已保存 token（用于 UI 显示「已连接」，不必解密）。
   final bool hasToken;
@@ -78,12 +113,16 @@ class SlackConfig {
     List<SlackRecipient>? recipients,
     bool? notifySuccess,
     bool? notifyFailure,
+    String? successTemplate,
+    String? failureTemplate,
     bool? hasToken,
   }) {
     return SlackConfig(
       recipients: recipients ?? this.recipients,
       notifySuccess: notifySuccess ?? this.notifySuccess,
       notifyFailure: notifyFailure ?? this.notifyFailure,
+      successTemplate: successTemplate ?? this.successTemplate,
+      failureTemplate: failureTemplate ?? this.failureTemplate,
       hasToken: hasToken ?? this.hasToken,
     );
   }
@@ -99,6 +138,10 @@ class SlackConfigController extends Notifier<SlackConfig> {
       recipients: _readRecipients(),
       notifySuccess: _prefs.getBool(_kNotifySuccess) ?? true,
       notifyFailure: _prefs.getBool(_kNotifyFailure) ?? true,
+      successTemplate:
+          _prefs.getString(_kSuccessTemplate) ?? kDefaultSlackSuccessTemplate,
+      failureTemplate:
+          _prefs.getString(_kFailureTemplate) ?? kDefaultSlackFailureTemplate,
       hasToken: _prefs.getBool(_kHasToken) ?? false,
     );
   }
@@ -141,6 +184,16 @@ class SlackConfigController extends Notifier<SlackConfig> {
   Future<void> setNotifyFailure(bool v) async {
     state = state.copyWith(notifyFailure: v);
     await _prefs.setBool(_kNotifyFailure, v);
+  }
+
+  Future<void> setSuccessTemplate(String v) async {
+    state = state.copyWith(successTemplate: v);
+    await _prefs.setString(_kSuccessTemplate, v);
+  }
+
+  Future<void> setFailureTemplate(String v) async {
+    state = state.copyWith(failureTemplate: v);
+    await _prefs.setString(_kFailureTemplate, v);
   }
 
   /// 保存（或清除）user token；空串视为清除。token 变更后清空成员缓存。
@@ -395,6 +448,8 @@ class SlackNotifier {
     required String jobFullName,
     required int number,
     required BuildResult result,
+    String url = '',
+    int durationMillis = 0,
   }) async {
     if (recipients.isEmpty) return;
     final cfg = _ref.read(slackConfigProvider);
@@ -414,7 +469,18 @@ class SlackNotifier {
       BuildResult.aborted => '构建已终止',
       _ => '构建结束',
     };
-    final text = '$emoji *$jobFullName* #$number $word';
+    final text = renderSlackMessage(
+      isSuccess ? cfg.successTemplate : cfg.failureTemplate,
+      job: jobFullName,
+      number: number,
+      result: word,
+      emoji: emoji,
+      duration: durationMillis > 0 ? formatDurationShort(durationMillis) : '',
+      url: url,
+      fallback: isSuccess
+          ? kDefaultSlackSuccessTemplate
+          : kDefaultSlackFailureTemplate,
+    );
     try {
       await _sendToAll(recipients, text, stopOnError: false);
     } catch (e) {

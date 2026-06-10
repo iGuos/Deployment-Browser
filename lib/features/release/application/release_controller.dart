@@ -153,6 +153,7 @@ class ReleaseRunState {
     this.errorMessage,
     this.triggering = false,
     this.aborting = false,
+    this.slackRecipients = const [],
   });
 
   final String jobFullName;
@@ -181,6 +182,9 @@ class ReleaseRunState {
 
   /// 正在向 Jenkins 发送终止请求；用于禁用「终止」按钮，避免重复点。
   final bool aborting;
+
+  /// 本次构建选定的 Slack 通知人；用于在进度面板表头展示「本次构建完通知谁」。
+  final List<SlackRecipient> slackRecipients;
 
   /// 是否正在等待 Jenkins 把这次触发派发到执行器。
   ///
@@ -245,6 +249,7 @@ class ReleaseRunState {
     String? errorMessage,
     bool? triggering,
     bool? aborting,
+    List<SlackRecipient>? slackRecipients,
     bool clearError = false,
     bool clearQueue = false,
     bool clearBuild = false,
@@ -269,6 +274,7 @@ class ReleaseRunState {
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       triggering: triggering ?? this.triggering,
       aborting: aborting ?? this.aborting,
+      slackRecipients: slackRecipients ?? this.slackRecipients,
     );
   }
 }
@@ -309,6 +315,15 @@ class ReleaseController extends Notifier<ReleaseRunState> {
   /// 本次发版选定的 Slack 通知接收人（为空则不发 Slack）。
   List<SlackRecipient> _slackRecipients = const [];
 
+  /// 通知里用来替代冗长 Job 全名的别名（为空则用 [jobFullName]）。
+  String? _jobAlias;
+
+  /// 通知中展示的项目名：有别名用别名，否则回退到 Job 全名。
+  String get _notifyJobName =>
+      (_jobAlias != null && _jobAlias!.trim().isNotEmpty)
+      ? _jobAlias!.trim()
+      : jobFullName;
+
   /// 触发一次新构建。
   ///
   /// 设计原则：**保留旧的 build / buildNumber / stages 仍可见**，只重置队列状态与错误。
@@ -319,8 +334,10 @@ class ReleaseController extends Notifier<ReleaseRunState> {
   Future<void> trigger({
     Map<String, String> parameters = const {},
     List<SlackRecipient> slackRecipients = const [],
+    String? jobAlias,
   }) async {
     _slackRecipients = slackRecipients;
+    _jobAlias = jobAlias;
     final repo = _repo();
     if (repo == null) return;
     _queuePollTimer?.cancel();
@@ -330,6 +347,7 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       triggering: true,
       clearError: true,
       clearQueue: true,
+      slackRecipients: slackRecipients,
     );
     final triggeredAt = DateTime.now().millisecondsSinceEpoch;
     // 触发前先拉一次 history 记录当前最大 build 号；再叠加进程内的"已占用门槛"，
@@ -608,16 +626,18 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       _ => isZh ? '构建结束' : 'Build finished',
     };
     unawaited(showBuildResultNotification(
-      title: jobFullName,
+      title: _notifyJobName,
       body: '#$number · $status',
     ));
 
     // Slack 通知：私信本次发版选定的人（为空则不发），按设置过滤成功/失败。
     unawaited(ref.read(slackNotifierProvider).notifyBuildResult(
           recipients: _slackRecipients,
-          jobFullName: jobFullName,
+          jobFullName: _notifyJobName,
           number: number,
           result: build.resultEnum,
+          url: build.url,
+          durationMillis: build.duration,
         ));
   }
 

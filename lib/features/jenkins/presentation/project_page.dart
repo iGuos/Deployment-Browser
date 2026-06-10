@@ -10,6 +10,7 @@ import '../../release/application/release_controller.dart';
 import '../../release/presentation/log_viewer.dart';
 import '../../release/presentation/progress_panel.dart';
 import '../application/branch_defaults_provider.dart';
+import '../application/job_alias_provider.dart';
 import '../data/jenkins_repository.dart';
 import '../data/project_detail_provider.dart';
 import '../domain/build_parameter.dart';
@@ -181,7 +182,19 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
         .read(projectRunTabsProvider(_runTabsKey).notifier)
         .addRun(_activeJobFullName);
     final controller = ref.read(releaseControllerProvider(handle).notifier);
-    await controller.trigger(parameters: merged, slackRecipients: _notifyTargets);
+    final alias =
+        ref.read(jobAliasProvider(widget.jenkinsAccountId))[widget.fullName];
+    await controller.trigger(
+      parameters: merged,
+      slackRecipients: _notifyTargets,
+      jobAlias: alias,
+    );
+
+    // 本次发版的通知人已随 run 固化进对应 controller 状态（右侧表头展示）；
+    // 清空发版页的选择，下一次构建从空白开始，避免误带上一次的通知人。
+    if (mounted) {
+      setState(() => _notifyTargets = const []);
+    }
   }
 }
 
@@ -224,6 +237,25 @@ class _LeftPane extends ConsumerWidget {
   final List<SlackRecipient> notifyTargets;
   final ValueChanged<List<SlackRecipient>> onNotifyTargetsChanged;
 
+  /// 弹框编辑本项目的通知别名（用于构建完成通知里替代冗长 Job 名）。
+  Future<void> _editAlias(
+    BuildContext context,
+    WidgetRef ref,
+    String? current,
+  ) async {
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => _AliasEditDialog(
+        initial: current ?? '',
+        hintName: widget.displayName,
+      ),
+    );
+    if (result == null) return; // 取消 / ESC
+    await ref
+        .read(jobAliasProvider(widget.jenkinsAccountId).notifier)
+        .setAlias(widget.fullName, result);
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final palette = context.palette;
@@ -238,6 +270,9 @@ class _LeftPane extends ConsumerWidget {
       if (p.isNotEmpty) return p;
       return (folderDetail.description ?? '').trim();
     }();
+    final alias = ref.watch(
+      jobAliasProvider(widget.jenkinsAccountId).select((m) => m[widget.fullName]),
+    );
 
     return Container(
       decoration: BoxDecoration(
@@ -375,6 +410,8 @@ class _LeftPane extends ConsumerWidget {
                     pool: slackCfg.recipients,
                     selected: notifyTargets,
                     onChanged: onNotifyTargetsChanged,
+                    alias: alias,
+                    onEditAlias: () => _editAlias(context, ref, alias),
                   ),
                 );
               },
@@ -719,16 +756,23 @@ class _NotifyTargetField extends StatelessWidget {
     required this.pool,
     required this.selected,
     required this.onChanged,
+    required this.alias,
+    required this.onEditAlias,
   });
 
   final List<SlackRecipient> pool;
   final List<SlackRecipient> selected;
   final ValueChanged<List<SlackRecipient>> onChanged;
 
+  /// 本项目的通知别名（用于通知文案里替代冗长 Job 名）；为空表示未设置。
+  final String? alias;
+  final VoidCallback onEditAlias;
+
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
     final l10n = AppL10n.of(context);
+    final hasAlias = alias != null && alias!.isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -738,6 +782,40 @@ class _NotifyTargetField extends StatelessWidget {
             const SizedBox(width: 8),
             Text(l10n.projectNotifyLabel,
                 style: TextStyle(color: palette.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+            const SizedBox(width: 10),
+            if (hasAlias)
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: palette.info.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      '${l10n.projectAliasBadge}: ${alias!}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: palette.info, fontSize: 11),
+                    ),
+                  ),
+                ),
+              )
+            else
+              const Spacer(),
+            Tooltip(
+              message: l10n.projectAliasTooltip,
+              waitDuration: const Duration(milliseconds: 300),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: onEditAlias,
+                child: Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: Icon(Icons.edit_outlined, size: 15, color: palette.muted),
+                ),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 8),
@@ -850,6 +928,71 @@ class _PoolPickerDialogState extends State<_PoolPickerDialog> {
         FilledButton(
           onPressed: () => Navigator.pop(context, _selected.values.toList()),
           child: Text('${l10n.commonConfirm} (${_selected.length})'),
+        ),
+      ],
+    );
+  }
+}
+
+/// 通知别名编辑弹框。自持 [TextEditingController]，在 [State.dispose] 里释放——
+/// 这样无论是点「保存 / 取消」还是按 ESC 关闭，控制器都在路由完全移除后才销毁，
+/// 不会在退场动画中被仍然挂载的 TextField 引用到（否则会触发 framework 断言崩溃）。
+class _AliasEditDialog extends StatefulWidget {
+  const _AliasEditDialog({required this.initial, required this.hintName});
+
+  final String initial;
+  final String hintName;
+
+  @override
+  State<_AliasEditDialog> createState() => _AliasEditDialogState();
+}
+
+class _AliasEditDialogState extends State<_AliasEditDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppL10n.of(context);
+    final palette = context.palette;
+    return AlertDialog(
+      title: Text(l10n.projectAliasDialogTitle),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            l10n.projectAliasDialogHint,
+            style: TextStyle(color: palette.muted, fontSize: 12, height: 1.4),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            style: const TextStyle(fontSize: 14),
+            decoration: InputDecoration(
+              isDense: true,
+              labelText: l10n.projectAliasField,
+              hintText: widget.hintName,
+            ),
+            onSubmitted: (v) => Navigator.pop(context, v),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(l10n.commonCancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text),
+          child: Text(l10n.settingsSave),
         ),
       ],
     );

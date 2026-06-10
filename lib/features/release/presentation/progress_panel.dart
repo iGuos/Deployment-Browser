@@ -167,6 +167,26 @@ class _Header extends StatelessWidget {
               l10n.buildQueueId(state.queueItemId!),
               style: TextStyle(color: palette.muted, fontSize: 12),
             ),
+          if (state.slackRecipients.isNotEmpty) ...[
+            const SizedBox(width: 14),
+            Icon(
+              Icons.notifications_active_outlined,
+              size: 13,
+              color: palette.info,
+            ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Tooltip(
+                message: state.slackRecipients.map((r) => r.label).join('、'),
+                child: Text(
+                  state.slackRecipients.map((r) => r.label).join('、'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: palette.muted, fontSize: 12),
+                ),
+              ),
+            ),
+          ],
           const Spacer(),
           if (state.build != null)
             Padding(

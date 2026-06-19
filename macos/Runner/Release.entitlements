@@ -10,5 +10,11 @@
 	<!-- 内置 MCP 接口 / 转发代理监听端口（缺失会导致 release 下 bind 报 EPERM: Operation not permitted） -->
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- 账号导入导出（file_selector）；缺失会导致 release 下点「导入配置」无反应，沙盒禁止打开文件选择面板 -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- 扫码导入账号（mobile_scanner） -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
 </dict>
 </plist>

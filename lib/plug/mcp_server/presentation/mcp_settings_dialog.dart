@@ -34,6 +34,7 @@ class McpServerSettingsDialog extends ConsumerStatefulWidget {
 class _McpServerSettingsDialogState
     extends ConsumerState<McpServerSettingsDialog> {
   late final TextEditingController _portController;
+  late final FocusNode _portFocus;
 
   @override
   void initState() {
@@ -42,10 +43,16 @@ class _McpServerSettingsDialogState
     _portController = TextEditingController(
       text: cfg.port > 0 ? '${cfg.port}' : '8765',
     );
+    // 失焦时提交端口，避免「未失焦就开启」用到旧端口，又不会逐字输入时反复重绑。
+    _portFocus = FocusNode()
+      ..addListener(() {
+        if (!_portFocus.hasFocus) _commitPort();
+      });
   }
 
   @override
   void dispose() {
+    _portFocus.dispose();
     _portController.dispose();
     super.dispose();
   }
@@ -55,6 +62,7 @@ class _McpServerSettingsDialogState
 
   Future<void> _onToggleEnabled(bool value) async {
     if (value) {
+      await _commitPort(); // 先确保端口已落库，再开启绑定。
       await _controller.update((c) => c.copyWith(enabled: true));
       return;
     }
@@ -231,6 +239,8 @@ class _McpServerSettingsDialogState
 
   Widget _statusBanner(AppPalette palette) {
     final status = ref.watch(mcpServerStatusProvider);
+    final portConfigured =
+        ref.watch(mcpServerConfigProvider.select((c) => c.isListenConfigured));
     final (Color color, IconData icon, String text) = status.hasError
         ? (palette.danger, Icons.error_outline, '接口未运行：${status.error}')
         : status.listening
@@ -239,7 +249,10 @@ class _McpServerSettingsDialogState
                 Icons.check_circle_outline,
                 '监听中 · ${status.loopbackOnly ? '127.0.0.1' : '0.0.0.0'}:${status.port}',
               )
-            : (palette.warning, Icons.hourglass_empty, '正在启动…');
+            : !portConfigured
+                ? (palette.warning, Icons.warning_amber_rounded,
+                    '请填写有效端口（1–65535）后才会启动。')
+                : (palette.warning, Icons.hourglass_empty, '正在启动…');
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
@@ -322,6 +335,7 @@ class _McpServerSettingsDialogState
           width: 120,
           child: TextField(
             controller: _portController,
+            focusNode: _portFocus,
             keyboardType: TextInputType.number,
             inputFormatters: [
               FilteringTextInputFormatter.digitsOnly,
@@ -333,7 +347,6 @@ class _McpServerSettingsDialogState
               border: OutlineInputBorder(),
             ),
             onSubmitted: (_) => _commitPort(),
-            onEditingComplete: _commitPort,
           ),
         ),
       ],
@@ -380,13 +393,67 @@ class _McpServerSettingsDialogState
               fontFamily: 'monospace',
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 10),
           Text(
-            '调用方需在请求头携带：Authorization: Bearer <令牌>（或 X-MCP-Token: <令牌>）。',
+            '请求头（任选其一，复制后在末尾粘贴你的令牌）',
             style: TextStyle(color: palette.muted, fontSize: 11),
           ),
+          const SizedBox(height: 6),
+          _headerLine(palette, 'Authorization: Bearer ', '<令牌>'),
+          const SizedBox(height: 4),
+          _headerLine(palette, 'X-MCP-Token: ', '<令牌>'),
         ],
       ),
+    );
+  }
+
+  /// 可复制的请求头行：复制的是 [prefix]（不含占位符），方便直接粘贴令牌。
+  Widget _headerLine(AppPalette palette, String prefix, String placeholder) {
+    return Row(
+      children: [
+        Expanded(
+          child: SelectableText.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: prefix,
+                  style: TextStyle(
+                    color: palette.text,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+                TextSpan(
+                  text: placeholder,
+                  style: TextStyle(
+                    color: palette.muted,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        InkWell(
+          borderRadius: BorderRadius.circular(4),
+          onTap: () async {
+            await Clipboard.setData(ClipboardData(text: prefix));
+            if (mounted) {
+              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                SnackBar(
+                  content: Text('已复制「${prefix.trim()}」'),
+                  duration: const Duration(seconds: 1),
+                ),
+              );
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(Icons.copy, size: 13, color: palette.muted),
+          ),
+        ),
+      ],
     );
   }
 

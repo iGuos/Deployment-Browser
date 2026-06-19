@@ -11,6 +11,7 @@ import '../../../features/jenkins/domain/jenkins_tree_transform.dart';
 import '../../../features/settings/data/jenkins_accounts_repository.dart';
 import '../application/mcp_server_log_provider.dart';
 import '../application/mcp_server_state_provider.dart';
+import '../application/mcp_server_status_provider.dart';
 import '../core/mcp_server_config.dart';
 import '../core/mcp_token.dart';
 
@@ -52,6 +53,35 @@ class _McpServerSettingsDialogState
   McpServerConfigController get _controller =>
       ref.read(mcpServerConfigProvider.notifier);
 
+  Future<void> _onToggleEnabled(bool value) async {
+    if (value) {
+      await _controller.update((c) => c.copyWith(enabled: true));
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('关闭 MCP 接口？'),
+        content: const Text(
+          '关闭后将停止监听，所有 MCP 客户端将立即无法访问。已配置的令牌会保留，重新开启即可恢复。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _controller.update((c) => c.copyWith(enabled: false));
+    }
+  }
+
   Future<void> _commitPort() async {
     final raw = int.tryParse(_portController.text.trim()) ?? 0;
     final clamped = (raw >= 1 && raw <= 65535) ? raw : 0;
@@ -86,6 +116,10 @@ class _McpServerSettingsDialogState
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _enableRow(palette, cfg),
+                    if (cfg.enabled) ...[
+                      const SizedBox(height: 12),
+                      _statusBanner(palette),
+                    ],
                     const SizedBox(height: 16),
                     _bindModeRow(palette, cfg),
                     const SizedBox(height: 16),
@@ -189,9 +223,43 @@ class _McpServerSettingsDialogState
         ),
         Switch(
           value: cfg.enabled,
-          onChanged: (v) => _controller.update((c) => c.copyWith(enabled: v)),
+          onChanged: _onToggleEnabled,
         ),
       ],
+    );
+  }
+
+  Widget _statusBanner(AppPalette palette) {
+    final status = ref.watch(mcpServerStatusProvider);
+    final (Color color, IconData icon, String text) = status.hasError
+        ? (palette.danger, Icons.error_outline, '接口未运行：${status.error}')
+        : status.listening
+            ? (
+                palette.success,
+                Icons.check_circle_outline,
+                '监听中 · ${status.loopbackOnly ? '127.0.0.1' : '0.0.0.0'}:${status.port}',
+              )
+            : (palette.warning, Icons.hourglass_empty, '正在启动…');
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: color, fontSize: 11.5, fontWeight: FontWeight.w500),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

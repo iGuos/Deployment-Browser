@@ -7,6 +7,7 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -285,6 +286,46 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
   bool _mitmCertificateBusy = false;
   String? _serverLanAddress;
 
+  /// 客户端「启用代理」开启前正在做可达性探测；期间禁用开关避免重复触发。
+  bool _clientProbing = false;
+
+  /// 端口：仅允许数字，最长 5 位。
+  static final List<TextInputFormatter> _portFormatters = [
+    FilteringTextInputFormatter.digitsOnly,
+    LengthLimitingTextInputFormatter(5),
+  ];
+
+  /// 代理主机：仅允许 IP / 域名合法字符（字母、数字、点、连字符），
+  /// 从源头挡掉汉字、全角句号「。」、空格等。
+  static final List<TextInputFormatter> _hostFormatters = [
+    FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9.\-]')),
+  ];
+
+  /// 用户名 / 密码：仅允许可见 ASCII 字符，挡掉汉字等非 ASCII 输入。
+  static final List<TextInputFormatter> _asciiFormatters = [
+    FilteringTextInputFormatter.deny(RegExp(r'[^ -~]')),
+  ];
+
+  /// 校验主机是否为合法 IPv4 或域名（已被输入过滤限定为 ASCII 字符，这里再做结构校验）。
+  static bool _isValidProxyHost(String host) {
+    if (host.isEmpty || host.length > 253) return false;
+    // 全是数字和点：意图是 IP，必须是合法 IPv4（四段、每段 ≤255），
+    // 否则视为写错的 IP（如 192.168.0 / 192.168.0.101.5）。
+    if (RegExp(r'^[\d.]+$').hasMatch(host)) {
+      final m = RegExp(
+        r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$',
+      ).firstMatch(host);
+      if (m == null) return false;
+      return List.generate(4, (i) => int.parse(m.group(i + 1)!))
+          .every((o) => o <= 255);
+    }
+    // 含字母的域名（含单标签主机名，如 localhost）：每段字母数字开头结尾，可含连字符。
+    final hostname = RegExp(
+      r'^([A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)(\.([A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?))*$',
+    );
+    return hostname.hasMatch(host);
+  }
+
   Timer? _persistDebounce;
 
   @override
@@ -374,8 +415,14 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
   void _onDebouncedFieldChanged() {
     if (_role == NetworkProxyRole.server &&
         _serverListeningEnabled &&
-        !_serverHasRequiredAuth) {
+        (!_serverHasRequiredAuth || _parseServerPortField() <= 0)) {
       setState(() => _serverListeningEnabled = false);
+    }
+    // 客户端：主机或端口被清空时自动关闭「启用代理」，保持开关与可用性一致。
+    if (_role == NetworkProxyRole.client &&
+        _clientEnabled &&
+        (_hostCtrl.text.trim().isEmpty || _parseClientPortField() <= 0)) {
+      setState(() => _clientEnabled = false);
     }
     _persistDebounce?.cancel();
     _persistDebounce = Timer(const Duration(milliseconds: 550), () {
@@ -447,6 +494,13 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请先填写访问用户名和访问密码')));
+      return;
+    }
+    if (enabled && _parseServerPortField() <= 0) {
+      setState(() => _serverListeningEnabled = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先填写监听端口')));
       return;
     }
     final previous = _serverListeningEnabled;
@@ -699,9 +753,56 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
   }
 
   Future<void> _onClientEnabledToggled(bool enabled) async {
-    if (_role != NetworkProxyRole.client) return;
+    if (_role != NetworkProxyRole.client || _clientProbing) return;
+
+    // 关闭：直接写入，无需校验。
+    if (!enabled) {
+      final previous = _clientEnabled;
+      setState(() => _clientEnabled = false);
+      try {
+        await _persistClientSnapshot();
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _clientEnabled = previous);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('写入失败：$e')));
+      }
+      return;
+    }
+
+    // 开启前置校验：必须填了主机和端口。
+    final host = _hostCtrl.text.trim();
+    final port = _parseClientPortField();
+    if (host.isEmpty || port <= 0) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先填写代理主机和端口')));
+      return;
+    }
+    if (!_isValidProxyHost(host)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('代理主机不是合法的 IP 或域名')));
+      return;
+    }
+
+    // 开启前探测代理是否真正可达（网络可用）；不可达则不允许开启。
+    setState(() => _clientProbing = true);
+    final reachable = await _probeClientProxyReachable(host, port);
+    if (!mounted) return;
+    setState(() => _clientProbing = false);
+    if (!reachable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('代理 $host:$port 无响应或不是有效的 HTTP 代理，请检查地址/端口或网络后重试'),
+        ),
+      );
+      return;
+    }
+
     final previous = _clientEnabled;
-    setState(() => _clientEnabled = enabled);
+    setState(() => _clientEnabled = true);
     try {
       await _persistClientSnapshot();
     } catch (e) {
@@ -710,6 +811,68 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('写入失败：$e')));
+    }
+  }
+
+  /// 探测上游代理是否真正可用：建立连接（加密模式先做 TLS 握手）后，发一个
+  /// HTTP 代理请求（CONNECT），要求对方回有效的 HTTP 状态行（200/403/407/502…
+  /// 都算"它确实是个 HTTP 代理"）。
+  ///
+  /// 仅 TCP 连通不够——任意监听端口（SSH、数据库、打印机、随手填的局域网 IP 上
+  /// 恰好有服务）都能连上却不是代理；这里要求对方按 HTTP 代理协议应答才算通过。
+  Future<bool> _probeClientProxyReachable(String host, int port) async {
+    const timeout = Duration(seconds: 6);
+    const probeTarget = 'example.com:443';
+    final isHttpStatusLine = RegExp(r'^HTTP/1\.[01] \d{3}');
+    Socket? socket;
+    try {
+      socket = _clientEncrypted
+          ? await SecureSocket.connect(
+              host,
+              port,
+              timeout: timeout,
+              onBadCertificate: (_) => true,
+            )
+          : await Socket.connect(host, port, timeout: timeout);
+
+      socket.add(
+        utf8.encode(
+          'CONNECT $probeTarget HTTP/1.1\r\n'
+          'Host: $probeTarget\r\n'
+          'Proxy-Connection: close\r\n'
+          '\r\n',
+        ),
+      );
+      await socket.flush();
+
+      final completer = Completer<bool>();
+      final buffer = StringBuffer();
+      void finish(bool ok) {
+        if (!completer.isCompleted) completer.complete(ok);
+      }
+
+      final timer = Timer(timeout, () => finish(false));
+      final sub = socket.listen(
+        (data) {
+          buffer.write(latin1.decode(data));
+          final text = buffer.toString();
+          if (text.contains('\r\n') || text.length >= 16) {
+            finish(isHttpStatusLine.hasMatch(text));
+          }
+        },
+        onError: (_) => finish(false),
+        onDone: () => finish(isHttpStatusLine.hasMatch(buffer.toString())),
+        cancelOnError: true,
+      );
+
+      final ok = await completer.future;
+      timer.cancel();
+      await sub.cancel();
+      return ok;
+    } catch (_) {
+      return false;
+    } finally {
+      socket?.destroy();
     }
   }
 
@@ -771,7 +934,7 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
         child: Align(
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
+            constraints: const BoxConstraints(maxWidth: 660),
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
               children: [
@@ -780,6 +943,14 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       _SectionLabel(icon: Icons.tune_rounded, title: '工作模式'),
+                      const SizedBox(height: 6),
+                      Text(
+                        '服务端与客户端为二选一，不会同时启动。',
+                        style: textTheme.labelSmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                          height: 1.4,
+                        ),
+                      ),
                       if (isMobile) ...[
                         const SizedBox(height: 8),
                         Text(
@@ -825,6 +996,12 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                                 tooltip: _serverProxyAllowHosts.isEmpty
                                     ? '代理白名单（当前允许全部）'
                                     : '代理白名单（${_serverProxyAllowHosts.length} 条）',
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 32,
+                                  height: 32,
+                                ),
                                 icon: Badge(
                                   isLabelVisible:
                                       _serverProxyAllowHosts.isNotEmpty,
@@ -840,8 +1017,15 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                                   unawaited(_openServerProxyAllowlistDialog());
                                 },
                               ),
+                              const SizedBox(width: 4),
                               IconButton(
                                 tooltip: l10n.proxyViewLiveRequestsButton,
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 32,
+                                  height: 32,
+                                ),
                                 icon: const Icon(
                                   Icons.article_outlined,
                                   size: 20,
@@ -893,6 +1077,19 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                         ),
                         SwitchListTile.adaptive(
                           contentPadding: EdgeInsets.zero,
+                          title: const Text('启动监听'),
+                          subtitle: Text(
+                            '打开或关闭后立即写入；关闭后不占用端口。端口与仅本机/局域网在修改后约半秒自动保存。',
+                            style: textTheme.labelSmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                          value: _serverListeningEnabled,
+                          onChanged: _onServerListeningToggled,
+                        ),
+                        const SizedBox(height: 8),
+                        SwitchListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
                           title: const Text('HTTPS 解密抓包'),
                           subtitle: Text(
                             '开启后会对 CONNECT 建立本地 MITM TLS，客户端信任根证书后可看到 HTTPS 内部 URL/path。',
@@ -935,19 +1132,6 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                             value: _serverMitmRemoteClientsEnabled,
                             onChanged: _onServerMitmRemoteClientsChanged,
                           ),
-                        const SizedBox(height: 8),
-                        SwitchListTile.adaptive(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('启动监听'),
-                          subtitle: Text(
-                            '打开或关闭后立即写入；关闭后不占用端口。端口与仅本机/局域网在修改后约半秒自动保存。',
-                            style: textTheme.labelSmall?.copyWith(
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ),
-                          value: _serverListeningEnabled,
-                          onChanged: _onServerListeningToggled,
-                        ),
                         const Divider(height: 24),
                         SegmentedButton<bool>(
                           segments: const [
@@ -980,6 +1164,7 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                         TextField(
                           controller: _serverPortCtrl,
                           keyboardType: TextInputType.number,
+                          inputFormatters: _portFormatters,
                           decoration: const InputDecoration(
                             labelText: '监听端口',
                             hintText: '例如 8888',
@@ -988,6 +1173,7 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                         const SizedBox(height: 12),
                         TextField(
                           controller: _serverUserCtrl,
+                          inputFormatters: _asciiFormatters,
                           decoration: const InputDecoration(
                             labelText: '访问用户名',
                             hintText: '例如 proxy',
@@ -997,6 +1183,7 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                         TextField(
                           controller: _serverPassCtrl,
                           obscureText: true,
+                          inputFormatters: _asciiFormatters,
                           decoration: const InputDecoration(
                             labelText: '访问密码',
                             hintText: '开启监听前必须填写',
@@ -1070,17 +1257,31 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                           contentPadding: EdgeInsets.zero,
                           title: const Text('启用代理'),
                           subtitle: Text(
-                            '打开或关闭后立即写入；下方主机、端口等改完后约半秒自动保存。',
+                            _clientProbing
+                                ? '正在检测代理是否可达…'
+                                : '开启前需填写主机和端口，并检测代理可达；下方主机、端口等改完后约半秒自动保存。',
                             style: textTheme.labelSmall?.copyWith(
                               color: scheme.onSurfaceVariant,
                             ),
                           ),
+                          secondary: _clientProbing
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : null,
                           value: _clientEnabled,
-                          onChanged: _onClientEnabledToggled,
+                          onChanged: _clientProbing
+                              ? null
+                              : _onClientEnabledToggled,
                         ),
                         const Divider(height: 24),
                         TextField(
                           controller: _hostCtrl,
+                          inputFormatters: _hostFormatters,
                           decoration: const InputDecoration(
                             labelText: '代理主机',
                             hintText: '例：192.168.1.10 或 proxy.corp.local',
@@ -1090,11 +1291,13 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                         TextField(
                           controller: _portCtrl,
                           keyboardType: TextInputType.number,
+                          inputFormatters: _portFormatters,
                           decoration: const InputDecoration(labelText: '端口'),
                         ),
                         const SizedBox(height: 12),
                         TextField(
                           controller: _userCtrl,
+                          inputFormatters: _asciiFormatters,
                           decoration: const InputDecoration(
                             labelText: '用户名（可选）',
                           ),
@@ -1103,6 +1306,7 @@ class _ProxySettingsFormPageState extends ConsumerState<ProxySettingsFormPage> {
                         TextField(
                           controller: _passCtrl,
                           obscureText: true,
+                          inputFormatters: _asciiFormatters,
                           decoration: const InputDecoration(
                             labelText: '密码（可选）',
                           ),
@@ -2603,18 +2807,23 @@ class _SectionLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: scheme.primary),
-        const SizedBox(width: 8),
-        Text(
-          title,
-          style: Theme.of(
-            context,
-          ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        if (trailing != null) ...[const Spacer(), trailing!],
-      ],
+    // 固定行高，确保有/无 trailing 的分区标题高度一致（trailing 的 IconButton
+    // 默认 48×48 会撑高整行，导致标题与下方描述的间距不一致）。
+    return SizedBox(
+      height: 32,
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: scheme.primary),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: Theme.of(
+              context,
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          if (trailing != null) ...[const Spacer(), trailing!],
+        ],
+      ),
     );
   }
 }

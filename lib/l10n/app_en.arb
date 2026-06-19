@@ -3,6 +3,10 @@
 
   "appTitle": "Deployment · Jenkins Release",
 
+  "headerTagMcp": "MCP",
+  "headerTagProxyServer": "Proxy server",
+  "headerTagProxyClient": "Proxy client",
+
   "commonCancel": "Cancel",
   "commonClose": "Close",
   "commonEmpty": "No data",

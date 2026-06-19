@@ -18,6 +18,7 @@ import '../../settings/presentation/accounts_page.dart';
 import '../../settings/presentation/app_settings_dialog.dart';
 import '../../settings/presentation/proxy_window_io.dart';
 import '../../settings/presentation/settings_page.dart';
+import '../../../plug/mcp_server/application/mcp_server_state_provider.dart';
 import '../../../plug/network_proxy/application/network_proxy_certificate_prompt_controller.dart';
 import '../application/workspace_controller.dart';
 import '../domain/workspace_tab.dart';
@@ -670,6 +671,8 @@ class _AppHeader extends ConsumerWidget {
               letterSpacing: 0.4,
             ),
           ),
+          const SizedBox(width: 10),
+          const _HeaderServiceTags(),
           const Spacer(),
           Tooltip(
             message: l10n.accountsManage,
@@ -702,6 +705,103 @@ class _AppHeader extends ConsumerWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 顶栏服务状态标签：MCP 服务 / 代理服务器 / 代理客户端，仅在各自实际运行时显示。
+///
+/// 代理角色二选一（server/client 互斥），所以两个代理标签至多出现其一。
+class _HeaderServiceTags extends ConsumerWidget {
+  const _HeaderServiceTags();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+
+    final mcpOn = ref.watch(
+      mcpServerConfigProvider.select((c) => c.shouldRun),
+    );
+    final proxyState = ref.watch(networkProxyStateProvider);
+    final proxyServerOn = proxyState.shouldRunEmbeddedProxyServer;
+    final proxyClientOn = proxyState.shouldUseClientProxy;
+
+    final tags = <Widget>[
+      if (mcpOn)
+        _ServiceTag(
+          icon: Icons.hub_outlined,
+          label: l10n.headerTagMcp,
+          color: palette.accent,
+        ),
+      if (proxyServerOn)
+        _ServiceTag(
+          icon: Icons.dns_outlined,
+          label: l10n.headerTagProxyServer,
+          color: palette.success,
+        ),
+      if (proxyClientOn)
+        _ServiceTag(
+          icon: Icons.vpn_lock_outlined,
+          label: l10n.headerTagProxyClient,
+          color: palette.info,
+        ),
+    ];
+
+    if (tags.isEmpty) return const SizedBox.shrink();
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < tags.length; i++) ...[
+          if (i > 0) const SizedBox(width: 6),
+          tags[i],
+        ],
+      ],
+    );
+  }
+}
+
+class _ServiceTag extends StatelessWidget {
+  const _ServiceTag({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: label,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(11),
+          border: Border.all(color: color.withValues(alpha: 0.38)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                height: 1.0,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

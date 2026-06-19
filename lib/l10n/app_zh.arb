@@ -3,6 +3,10 @@
 
   "appTitle": "Deployment · Jenkins 发版",
 
+  "headerTagMcp": "MCP 服务",
+  "headerTagProxyServer": "代理服务器",
+  "headerTagProxyClient": "代理客户端",
+
   "commonCancel": "取消",
   "commonClose": "关闭",
   "commonEmpty": "暂无数据",

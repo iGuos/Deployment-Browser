@@ -29,8 +29,8 @@ Future<void> deploymentMain(List<String> args) async {
         try {
           await windowManager.ensureInitialized();
           const proxyOpts = WindowOptions(
-            size: Size(560, 700),
-            minimumSize: Size(440, 480),
+            size: Size(720, 700),
+            minimumSize: Size(520, 480),
             center: true,
             title: '代理设置',
             titleBarStyle: TitleBarStyle.normal,

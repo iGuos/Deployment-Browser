@@ -422,13 +422,7 @@ class _McpServerSettingsDialogState
           IconButton(
             icon: Icon(Icons.delete_outline, size: 16, color: palette.danger),
             tooltip: '删除',
-            onPressed: () => _controller.update(
-              (c) => c.copyWith(
-                tokens: c.tokens
-                    .where((t) => t.id != token.id)
-                    .toList(growable: false),
-              ),
-            ),
+            onPressed: () => _confirmDeleteToken(token),
           ),
         ],
       ),
@@ -492,6 +486,39 @@ class _McpServerSettingsDialogState
           );
         }
       },
+    );
+  }
+
+  Future<void> _confirmDeleteToken(McpToken token) async {
+    final name = token.label.isEmpty ? '(未命名令牌)' : token.label;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除访问令牌？'),
+        content: Text(
+          '将删除令牌「$name」。删除后使用该令牌的客户端将立即无法访问，此操作不可撤销。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: context.palette.danger,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _controller.update(
+      (c) => c.copyWith(
+        tokens:
+            c.tokens.where((t) => t.id != token.id).toList(growable: false),
+      ),
     );
   }
 

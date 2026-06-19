@@ -9,6 +9,7 @@ import 'core/theme/app_theme.dart';
 import 'core/theme/theme_controller.dart';
 import 'features/settings/application/network_proxy_embedded_server_binding.dart';
 import 'features/settings/application/network_proxy_state_provider.dart';
+import 'plug/mcp_server/application/mcp_server_binding.dart';
 import 'features/workspace/presentation/workspace_shell.dart';
 import 'l10n/app_localizations.dart';
 
@@ -42,6 +43,7 @@ class _DeploymentAppState extends ConsumerState<DeploymentApp> with WidgetsBindi
   @override
   Widget build(BuildContext context) {
     ref.watch(networkProxyEmbeddedServerBindingProvider);
+    ref.watch(mcpServerBindingProvider);
     final mode = ref.watch(themeModeProvider);
     final locale = ref.watch(appLocaleProvider);
     final accent = ref.watch(accentColorProvider);

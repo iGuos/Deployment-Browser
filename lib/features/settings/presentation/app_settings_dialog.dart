@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,9 +15,17 @@ import '../../../core/theme/theme_controller.dart';
 import '../../../core/utils/error_log_service.dart';
 import '../../../core/widgets/top_toast.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../plug/mcp_server/application/mcp_server_state_provider.dart';
+import '../../../plug/mcp_server/presentation/mcp_settings_dialog.dart';
 import '../../notifications/slack/slack_notifier.dart';
 import 'error_log_viewer.dart';
 import 'proxy_settings_window.dart';
+
+/// MCP 接口为桌面专属能力（仅 macOS / Windows / Linux 起内嵌服务器）。
+bool get _isDesktop =>
+    defaultTargetPlatform == TargetPlatform.macOS ||
+    defaultTargetPlatform == TargetPlatform.windows ||
+    defaultTargetPlatform == TargetPlatform.linux;
 
 /// 应用级设置：菜单说明、主题、语言、代理。
 Future<void> showAppSettingsDialog(BuildContext hostContext) {
@@ -167,6 +176,23 @@ class _AppSettingsDialog extends ConsumerWidget {
                   await openAppProxySettings(context: hostContext);
                 },
               ),
+              if (_isDesktop) ...[
+                Divider(height: 24, color: palette.borderSubtle),
+                _SectionTile(
+                  icon: Icons.hub_outlined,
+                  title: 'MCP 接口',
+                  subtitle: '对外提供 MCP（Streamable HTTP）接口，供 AI 客户端查询与触发发版。',
+                  trailing: ref.watch(
+                          mcpServerConfigProvider.select((c) => c.shouldRun))
+                      ? Icon(Icons.check_circle_rounded,
+                          size: 16, color: palette.success)
+                      : null,
+                  onTap: () async {
+                    Navigator.of(context).pop();
+                    await showMcpServerSettings(hostContext);
+                  },
+                ),
+              ],
               Divider(height: 24, color: palette.borderSubtle),
               ListenableBuilder(
                 listenable: errorLogService,

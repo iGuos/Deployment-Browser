@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../features/jenkins/data/jenkins_repository.dart';
@@ -6,6 +9,7 @@ import '../../../features/jenkins/domain/jenkins_build.dart';
 import '../../../features/jenkins/domain/jenkins_node.dart';
 import '../../../features/jenkins/domain/jenkins_tree_transform.dart';
 import '../../../features/settings/data/jenkins_accounts_repository.dart';
+import '../../../features/settings/domain/jenkins_account.dart';
 import '../core/mcp_protocol.dart';
 import '../core/mcp_token.dart';
 import '../core/mcp_tool_specs.dart';
@@ -56,10 +60,9 @@ class McpJenkinsService {
     final accounts = state.accounts
         .where((a) => token.allowsAccount(a.id))
         .map((a) => {
-              'id': a.id,
+              // 对外只给不可逆哈希 id，绝不暴露用户名 / Jenkins 地址。
+              'id': _externalAccountId(a.id),
               'name': a.displayName,
-              'host': a.config.displayHost,
-              'baseUrl': a.config.baseUrl,
               'active': a.id == state.activeId,
               'configured': a.config.isComplete,
             })
@@ -71,19 +74,19 @@ class McpJenkinsService {
     McpToken token,
     Map<String, dynamic> args,
   ) async {
-    final accountId = _str(args['accountId']);
-    final guard = _guardAccount(token, accountId);
-    if (guard != null) return guard;
+    final externalId = _str(args['accountId']);
+    final (account, accountErr) = await _requireAccount(token, externalId);
+    if (accountErr != null) return accountErr;
 
     final roots = await _ref.read(
-      jenkinsTreeForAccountProvider(accountId).future,
+      jenkinsTreeForAccountProvider(account!.id).future,
     );
     final projects = collectSidebarProjectNodes(roots)
         .where((n) => token.allowsProject(n.fullName))
         .map(_projectJson)
         .toList(growable: false);
     return McpCallOutcome.ok({
-      'accountId': accountId,
+      'accountId': externalId,
       'projects': projects,
     });
   }
@@ -92,16 +95,16 @@ class McpJenkinsService {
     McpToken token,
     Map<String, dynamic> args,
   ) async {
-    final accountId = _str(args['accountId']);
+    final externalId = _str(args['accountId']);
     final fullName = _str(args['projectFullName']);
-    final guard = _guardProject(token, accountId, fullName);
-    if (guard != null) return guard;
-    final repo = _ref.read(jenkinsRepositoryForAccountProvider(accountId));
-    if (repo == null) return _accountUnavailable(accountId);
+    final (account, err) = await _requireProject(token, externalId, fullName);
+    if (err != null) return err;
+    final repo = _ref.read(jenkinsRepositoryForAccountProvider(account!.id));
+    if (repo == null) return _accountUnavailable();
 
     final detail = await repo.fetchJobDetail(fullName);
     return McpCallOutcome.ok({
-      'accountId': accountId,
+      'accountId': externalId,
       'projectFullName': fullName,
       'jobClass': detail.raw['_class'],
       'parameters':
@@ -113,12 +116,12 @@ class McpJenkinsService {
     McpToken token,
     Map<String, dynamic> args,
   ) async {
-    final accountId = _str(args['accountId']);
+    final externalId = _str(args['accountId']);
     final fullName = _str(args['projectFullName']);
-    final guard = _guardProject(token, accountId, fullName);
-    if (guard != null) return guard;
-    final repo = _ref.read(jenkinsRepositoryForAccountProvider(accountId));
-    if (repo == null) return _accountUnavailable(accountId);
+    final (account, err) = await _requireProject(token, externalId, fullName);
+    if (err != null) return err;
+    final repo = _ref.read(jenkinsRepositoryForAccountProvider(account!.id));
+    if (repo == null) return _accountUnavailable();
 
     final overrides = <String, String>{};
     final rawParams = args['parameters'];
@@ -136,6 +139,7 @@ class McpJenkinsService {
     final queueId = _queueIdFromUrl(queueUrl);
 
     // 立即返回（按设计不等待构建完成）；顺手探一次队列，若已分配构建号则一并带回。
+    // 注意：queueUrl 含 Jenkins 地址，绝不回传给调用方，只返回 queueId / buildNumber。
     int? buildNumber;
     try {
       final item = await repo.fetchQueueItem(queueUrl);
@@ -143,9 +147,8 @@ class McpJenkinsService {
     } catch (_) {}
 
     return McpCallOutcome.ok({
-      'accountId': accountId,
+      'accountId': externalId,
       'projectFullName': fullName,
-      'queueUrl': queueUrl,
       'queueId': queueId,
       'buildNumber': buildNumber,
       'parameters': merged,
@@ -159,19 +162,19 @@ class McpJenkinsService {
     McpToken token,
     Map<String, dynamic> args,
   ) async {
-    final accountId = _str(args['accountId']);
+    final externalId = _str(args['accountId']);
     final fullName = _str(args['projectFullName']);
-    final guard = _guardProject(token, accountId, fullName);
-    if (guard != null) return guard;
-    final repo = _ref.read(jenkinsRepositoryForAccountProvider(accountId));
-    if (repo == null) return _accountUnavailable(accountId);
+    final (account, err) = await _requireProject(token, externalId, fullName);
+    if (err != null) return err;
+    final repo = _ref.read(jenkinsRepositoryForAccountProvider(account!.id));
+    if (repo == null) return _accountUnavailable();
 
     var buildNumber = (args['buildNumber'] as num?)?.toInt();
     if (buildNumber == null) {
       final latest = await repo.fetchHistory(fullName, count: 1);
       if (latest.isEmpty) {
         return McpCallOutcome.ok({
-          'accountId': accountId,
+          'accountId': externalId,
           'projectFullName': fullName,
           'found': false,
           'message': '该项目暂无构建记录。',
@@ -192,7 +195,7 @@ class McpJenkinsService {
     }
 
     return McpCallOutcome.ok({
-      'accountId': accountId,
+      'accountId': externalId,
       'projectFullName': fullName,
       'found': true,
       'build': _buildJson(build),
@@ -205,12 +208,12 @@ class McpJenkinsService {
     McpToken token,
     Map<String, dynamic> args,
   ) async {
-    final accountId = _str(args['accountId']);
+    final externalId = _str(args['accountId']);
     final fullName = _str(args['projectFullName']);
-    final guard = _guardProject(token, accountId, fullName);
-    if (guard != null) return guard;
-    final repo = _ref.read(jenkinsRepositoryForAccountProvider(accountId));
-    if (repo == null) return _accountUnavailable(accountId);
+    final (account, err) = await _requireProject(token, externalId, fullName);
+    if (err != null) return err;
+    final repo = _ref.read(jenkinsRepositoryForAccountProvider(account!.id));
+    if (repo == null) return _accountUnavailable();
 
     final count = (args['count'] as num?)?.toInt() ?? 20;
     final rows = await repo.fetchReleaseHistory(
@@ -218,51 +221,72 @@ class McpJenkinsService {
       count: count.clamp(1, 200),
     );
     return McpCallOutcome.ok({
-      'accountId': accountId,
+      'accountId': externalId,
       'projectFullName': fullName,
       'history': rows.map(_historyJson).toList(growable: false),
     });
   }
 
-  // ---------------- 作用域校验 ----------------
+  // ---------------- 账号解析 + 作用域校验 ----------------
 
-  McpCallOutcome? _guardAccount(McpToken token, String accountId) {
-    if (accountId.isEmpty) {
-      return const McpCallOutcome.error('缺少必填参数 accountId。');
-    }
-    if (!token.allowsAccount(accountId)) {
-      return const McpCallOutcome.error('当前令牌无权访问该账号。');
-    }
-    return null;
+  /// 对外账号标识：内部真实 id（含用户名@域名）的 SHA-256 前 16 位十六进制。
+  /// 单向、稳定，调用方可跨次复用，但无法据此反推任何明文。
+  String _externalAccountId(String realId) {
+    final digest = sha256.convert(utf8.encode(realId));
+    return 'acct_${digest.toString().substring(0, 16)}';
   }
 
-  McpCallOutcome? _guardProject(
+  /// 由对外哈希 id 反查内部账号，并校验令牌作用域。
+  Future<(JenkinsAccount?, McpCallOutcome?)> _requireAccount(
     McpToken token,
-    String accountId,
+    String externalId,
+  ) async {
+    if (externalId.isEmpty) {
+      return (null, const McpCallOutcome.error('缺少必填参数 accountId。'));
+    }
+    final state = await _ref.read(jenkinsAccountsProvider.future);
+    JenkinsAccount? found;
+    for (final a in state.accounts) {
+      if (_externalAccountId(a.id) == externalId) {
+        found = a;
+        break;
+      }
+    }
+    if (found == null) {
+      return (null, const McpCallOutcome.error('账号不存在或无权访问。'));
+    }
+    if (!token.allowsAccount(found.id)) {
+      return (null, const McpCallOutcome.error('当前令牌无权访问该账号。'));
+    }
+    return (found, null);
+  }
+
+  Future<(JenkinsAccount?, McpCallOutcome?)> _requireProject(
+    McpToken token,
+    String externalId,
     String fullName,
-  ) {
-    final a = _guardAccount(token, accountId);
-    if (a != null) return a;
+  ) async {
+    final (account, err) = await _requireAccount(token, externalId);
+    if (err != null) return (null, err);
     if (fullName.isEmpty) {
-      return const McpCallOutcome.error('缺少必填参数 projectFullName。');
+      return (null, const McpCallOutcome.error('缺少必填参数 projectFullName。'));
     }
     if (!token.allowsProject(fullName)) {
-      return const McpCallOutcome.error('当前令牌无权访问该项目。');
+      return (null, const McpCallOutcome.error('当前令牌无权访问该项目。'));
     }
-    return null;
+    return (account, null);
   }
 
-  McpCallOutcome _accountUnavailable(String accountId) =>
-      McpCallOutcome.error('账号 $accountId 不存在或配置不完整。');
+  McpCallOutcome _accountUnavailable() =>
+      const McpCallOutcome.error('账号不存在或配置不完整。');
 
-  // ---------------- 序列化 ----------------
+  // ---------------- 序列化（不含任何 Jenkins 地址 / 用户名）----------------
 
   Map<String, dynamic> _projectJson(JenkinsNode n) => {
         'fullName': n.fullName,
         'name': n.name,
         'kind': n.kind.name,
         'buildable': n.buildable,
-        'url': n.url,
         'lastBuildNumber': n.lastBuildNumber,
         'lastBuildResult': n.lastBuildResult,
       };
@@ -278,7 +302,6 @@ class McpJenkinsService {
 
   Map<String, dynamic> _buildJson(JenkinsBuild b) => {
         'number': b.number,
-        'url': b.url,
         'building': b.building,
         'result': b.result,
         'status': b.resultEnum.name,

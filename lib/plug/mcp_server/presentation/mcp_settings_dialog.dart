@@ -63,7 +63,17 @@ class _McpServerSettingsDialogState
   Future<void> _onToggleEnabled(bool value) async {
     if (value) {
       await _commitPort(); // 先确保端口已落库，再开启绑定。
+      // 若内部 enabled 仍为 true（上次绑定失败、开关已显示为关），enabled 不变不会
+      // 触发重新绑定；先关再开强制重试一次。
+      if (ref.read(mcpServerConfigProvider).enabled) {
+        await _controller.update((c) => c.copyWith(enabled: false));
+      }
       await _controller.update((c) => c.copyWith(enabled: true));
+      return;
+    }
+    // 开关显示为关但内部 enabled=true（绑定失败态）：直接停掉，无需二次确认。
+    if (!ref.read(mcpServerStatusProvider).listening) {
+      await _controller.update((c) => c.copyWith(enabled: false));
       return;
     }
     final ok = await showDialog<bool>(
@@ -204,6 +214,9 @@ class _McpServerSettingsDialogState
   }
 
   Widget _enableRow(AppPalette palette, McpServerConfig cfg) {
+    final hasError = ref.watch(mcpServerStatusProvider.select((s) => s.hasError));
+    // 绑定失败（如端口被占用）时不显示为「已开启」，避免误导。
+    final switchOn = cfg.enabled && !hasError;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -230,7 +243,7 @@ class _McpServerSettingsDialogState
           ),
         ),
         Switch(
-          value: cfg.enabled,
+          value: switchOn,
           onChanged: _onToggleEnabled,
         ),
       ],

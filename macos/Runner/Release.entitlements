@@ -4,7 +4,11 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- 访问 Jenkins / 内置代理出站 -->
 	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- 内置 MCP 接口 / 转发代理监听端口（缺失会导致 release 下 bind 报 EPERM: Operation not permitted） -->
+	<key>com.apple.security.network.server</key>
 	<true/>
 </dict>
 </plist>

@@ -558,6 +558,31 @@ class _McpTokenEditorDialogState extends ConsumerState<_McpTokenEditorDialog> {
     return 'mcp_${base64Url.encode(bytes).replaceAll('=', '')}';
   }
 
+  Future<void> _confirmRegenerate() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('重新生成令牌密钥？'),
+        content: const Text(
+          '生成新密钥后，旧密钥将立即失效，所有正在使用旧密钥的客户端都需要更新。此操作不可撤销。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('重新生成'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      setState(() => _secret = _generateSecret());
+    }
+  }
+
   void _save() {
     final e = widget.existing;
     final token = McpToken(
@@ -715,7 +740,7 @@ class _McpTokenEditorDialogState extends ConsumerState<_McpTokenEditorDialog> {
               IconButton(
                 icon: Icon(Icons.refresh, size: 16, color: palette.muted),
                 tooltip: '重新生成',
-                onPressed: () => setState(() => _secret = _generateSecret()),
+                onPressed: _confirmRegenerate,
               ),
             ],
           ),

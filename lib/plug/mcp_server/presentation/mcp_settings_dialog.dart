@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/top_toast.dart';
 import '../../../features/jenkins/data/jenkins_repository.dart';
 import '../../../features/jenkins/domain/jenkins_tree_transform.dart';
 import '../../../features/settings/data/jenkins_accounts_repository.dart';
@@ -452,14 +453,7 @@ class _McpServerSettingsDialogState
           borderRadius: BorderRadius.circular(4),
           onTap: () async {
             await Clipboard.setData(ClipboardData(text: prefix));
-            if (mounted) {
-              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                SnackBar(
-                  content: Text('已复制「${prefix.trim()}」'),
-                  duration: const Duration(seconds: 1),
-                ),
-              );
-            }
+            if (mounted) showTopToast(context, '已复制「${prefix.trim()}」');
           },
           child: Padding(
             padding: const EdgeInsets.all(4),
@@ -628,11 +622,7 @@ class _McpServerSettingsDialogState
       tooltip: tooltip ?? '复制',
       onPressed: () async {
         await Clipboard.setData(ClipboardData(text: value));
-        if (mounted) {
-          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-            const SnackBar(content: Text('已复制到剪贴板'), duration: Duration(seconds: 1)),
-          );
-        }
+        if (mounted) showTopToast(context, '已复制到剪贴板');
       },
     );
   }
@@ -902,14 +892,7 @@ class _McpTokenEditorDialogState extends ConsumerState<_McpTokenEditorDialog> {
                 tooltip: '复制',
                 onPressed: () async {
                   await Clipboard.setData(ClipboardData(text: _secret));
-                  if (mounted) {
-                    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                      const SnackBar(
-                        content: Text('已复制令牌'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  }
+                  if (mounted) showTopToast(context, '已复制令牌');
                 },
               ),
               IconButton(

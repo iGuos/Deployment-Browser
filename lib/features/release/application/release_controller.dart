@@ -154,6 +154,7 @@ class ReleaseRunState {
     this.triggering = false,
     this.aborting = false,
     this.slackRecipients = const [],
+    this.variantLabel,
   });
 
   final String jobFullName;
@@ -185,6 +186,10 @@ class ReleaseRunState {
 
   /// 本次构建选定的 Slack 通知人；用于在进度面板表头展示「本次构建完通知谁」。
   final List<SlackRecipient> slackRecipients;
+
+  /// 区分「同一次点击展开出的多个 run」的短标签（多选参数的取值，如 `admin-api`）。
+  /// 单选触发为 null。仅用于 UI / 通知展示，不参与任何 Jenkins 请求。
+  final String? variantLabel;
 
   /// 是否正在等待 Jenkins 把这次触发派发到执行器。
   ///
@@ -250,9 +255,11 @@ class ReleaseRunState {
     bool? triggering,
     bool? aborting,
     List<SlackRecipient>? slackRecipients,
+    String? variantLabel,
     bool clearError = false,
     bool clearQueue = false,
     bool clearBuild = false,
+    bool clearVariantLabel = false,
   }) {
     return ReleaseRunState(
       jobFullName: jobFullName,
@@ -275,6 +282,9 @@ class ReleaseRunState {
       triggering: triggering ?? this.triggering,
       aborting: aborting ?? this.aborting,
       slackRecipients: slackRecipients ?? this.slackRecipients,
+      variantLabel: clearVariantLabel
+          ? null
+          : (variantLabel ?? this.variantLabel),
     );
   }
 }
@@ -319,10 +329,15 @@ class ReleaseController extends Notifier<ReleaseRunState> {
   String? _jobAlias;
 
   /// 通知中展示的项目名：有别名用别名，否则回退到 Job 全名。
-  String get _notifyJobName =>
-      (_jobAlias != null && _jobAlias!.trim().isNotEmpty)
-      ? _jobAlias!.trim()
-      : jobFullName;
+  String get _notifyJobName {
+    final base = (_jobAlias != null && _jobAlias!.trim().isNotEmpty)
+        ? _jobAlias!.trim()
+        : jobFullName;
+    // 一次点击发出多路构建（多选参数）时，通知里必须带上是哪一路。
+    final variant = state.variantLabel;
+    if (variant == null || variant.isEmpty) return base;
+    return '$base · $variant';
+  }
 
   /// 触发一次新构建。
   ///
@@ -335,6 +350,7 @@ class ReleaseController extends Notifier<ReleaseRunState> {
     Map<String, String> parameters = const {},
     List<SlackRecipient> slackRecipients = const [],
     String? jobAlias,
+    String? variantLabel,
   }) async {
     _slackRecipients = slackRecipients;
     _jobAlias = jobAlias;
@@ -348,6 +364,10 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       clearError: true,
       clearQueue: true,
       slackRecipients: slackRecipients,
+      // 单选触发（variantLabel == null）要把上一次的多选标签清掉，
+      // 否则同一 run 被复用时 tab 上会挂着过期的取值。
+      variantLabel: variantLabel,
+      clearVariantLabel: variantLabel == null,
     );
     final triggeredAt = DateTime.now().millisecondsSinceEpoch;
     // 触发前先拉一次 history 记录当前最大 build 号；再叠加进程内的"已占用门槛"，

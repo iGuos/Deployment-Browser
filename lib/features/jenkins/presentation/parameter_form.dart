@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_colors.dart';
@@ -27,11 +29,29 @@ class ParameterForm extends StatelessWidget {
     this.onSaveBranchDefault,
     this.onClearBranchDefault,
     this.onShowReleaseHistory,
+    this.multiSelectParam,
+    this.multiSelectValues = const [],
+    this.onToggleMultiSelect,
+    this.onChangeMultiSelectValues,
   });
 
   final List<BuildParameter> parameters;
   final Map<String, String> values;
   final void Function(String key, String value) onChange;
+
+  /// 当前开启「多选 → 发 N 次」的参数名；null = 没有参数开启多选。
+  /// 产品约束：**同一时刻最多一个**参数可多选，否则会变成笛卡尔积式的批量发版。
+  final String? multiSelectParam;
+
+  /// [multiSelectParam] 当前勾选的值（按勾选顺序）。
+  final List<String> multiSelectValues;
+
+  /// 切换某个参数的多选开关；为 null 时不渲染「多选」勾选框。
+  final void Function(String paramName, bool enabled)? onToggleMultiSelect;
+
+  /// 多选值变化。
+  final void Function(String paramName, List<String> values)?
+      onChangeMultiSelectValues;
 
   /// 可选：当某个参数被识别为「分支」时，用它去拉候选项；为 null 时仅当作普通输入框。
   final BranchOptionsLoader? branchOptionsLoader;
@@ -177,6 +197,8 @@ class ParameterForm extends StatelessWidget {
         );
         break;
       case BuildParameterKind.choice:
+        // 开了多选：同一份参数按勾选的值发 N 次（见 [BuildParameter.expandForMultiTrigger]）。
+        final multiOn = multiSelectParam == p.name;
         // 用与分支同款的可搜索下拉，区别是必须从枚举值中选（freeInput=false）。
         // 之所以放弃 DropdownButtonFormField：
         //   1. 它的菜单是从输入框位置覆盖式弹出，不能放下方；
@@ -184,19 +206,26 @@ class ParameterForm extends StatelessWidget {
         child = _LabelWrap(
           label: p.name,
           description: p.description,
-          child: _OptionsCombobox(
-            paramName: p.name,
-            defaultValue: p.choices.contains(current)
-                ? current
-                : (p.choices.isNotEmpty ? p.choices.first : ''),
-            fixedChoices: p.choices,
-            currentValue: values[p.name],
-            onChange: (v) => onChange(p.name, v),
-            freeInput: false,
-            // `service` 发板常用：仅允许从枚举中点选，不做键入模糊过滤（外观与其它 choice 一致）。
-            filterable: p.name.toLowerCase() != 'service',
-            iconData: Icons.list_rounded,
-          ),
+          trailing: _multiSelectToggle(context, p),
+          child: multiOn
+              ? _MultiChoiceField(
+                  choices: p.choices,
+                  selected: multiSelectValues,
+                  onChanged: (v) => onChangeMultiSelectValues?.call(p.name, v),
+                )
+              : _OptionsCombobox(
+                  paramName: p.name,
+                  defaultValue: p.choices.contains(current)
+                      ? current
+                      : (p.choices.isNotEmpty ? p.choices.first : ''),
+                  fixedChoices: p.choices,
+                  currentValue: values[p.name],
+                  onChange: (v) => onChange(p.name, v),
+                  freeInput: false,
+                  // `service` 发板常用：仅允许从枚举中点选，不做键入模糊过滤（外观与其它 choice 一致）。
+                  filterable: p.name.toLowerCase() != 'service',
+                  iconData: Icons.list_rounded,
+                ),
         );
         break;
       case BuildParameterKind.text:
@@ -248,6 +277,70 @@ class ParameterForm extends StatelessWidget {
     );
   }
 
+  /// 「多选」开关。参数标签右侧的次要控件，视觉权重要低于参数本身，
+  /// 所以不用 Material [Checkbox]（18px + 水波纹 + 40px 触控区，过于抢眼），
+  /// 而是自绘一个 12px 小方框 + 11px 说明文字。
+  ///
+  /// 同一时刻只允许一个参数多选：已有别的参数开启时，其余置灰并用 tooltip
+  /// 说明原因，而不是静默失效。
+  Widget? _multiSelectToggle(BuildContext context, BuildParameter p) {
+    if (onToggleMultiSelect == null) return null;
+    if (!p.supportsMultiSelect) return null;
+    final l10n = AppL10n.of(context);
+    final palette = context.palette;
+    final on = multiSelectParam == p.name;
+    final takenBy = multiSelectParam;
+    final blocked = !on && takenBy != null;
+
+    final boxColor = blocked
+        ? palette.borderSubtle
+        : (on ? palette.accent : palette.muted);
+    final labelColor = blocked
+        ? palette.borderSubtle
+        : (on ? palette.accent : palette.muted);
+
+    Widget control = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(
+              color: on ? palette.accent : Colors.transparent,
+              borderRadius: BorderRadius.circular(3),
+              border: Border.all(color: boxColor, width: 1.1),
+            ),
+            child: on
+                ? Icon(Icons.check_rounded, size: 9, color: palette.bg)
+                : null,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            l10n.projectMultiSelect,
+            style: TextStyle(color: labelColor, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+
+    if (!blocked) {
+      control = InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: () => onToggleMultiSelect!(p.name, !on),
+        child: control,
+      );
+    }
+    return Tooltip(
+      message: blocked
+          ? l10n.projectMultiSelectOnlyOne(takenBy)
+          : l10n.projectMultiSelectHint,
+      waitDuration: const Duration(milliseconds: 400),
+      child: control,
+    );
+  }
+
   IconData _iconFor(BuildParameterKind k) {
     return switch (k) {
       BuildParameterKind.string => Icons.text_fields_rounded,
@@ -260,6 +353,189 @@ class ParameterForm extends StatelessWidget {
       BuildParameterKind.gitBranch => Icons.alt_route_rounded,
       BuildParameterKind.unknown => Icons.help_outline_rounded,
     };
+  }
+}
+
+/// choice 参数开启「多选」后的输入控件：点开后是一列带勾选框的选项，
+/// 勾选不关闭菜单（[CheckboxMenuButton.closeOnActivate] = false），
+/// 关闭后在输入框位置以 chips 展示已选项。
+///
+/// 语义：勾了 N 项 = 点一次「立即构建」发 N 次版（每项一次，参数其余部分相同）。
+class _MultiChoiceField extends StatelessWidget {
+  const _MultiChoiceField({
+    required this.choices,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  /// 菜单行里除文本以外占掉的宽度（勾选框 + 左右内边距），用于把行撑到输入框同宽。
+  static const double _menuRowChromeWidth = 76;
+
+  final List<String> choices;
+  final List<String> selected;
+  final ValueChanged<List<String>> onChanged;
+
+  void _toggle(String value, bool on) {
+    final next = [...selected];
+    if (on) {
+      if (!next.contains(value)) next.add(value);
+    } else {
+      next.remove(value);
+    }
+    onChanged(next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    final l10n = AppL10n.of(context);
+    // 与 [_OptionsCombobox] 一致：弹层贴在输入框正下方且宽度等同输入框。
+    return LayoutBuilder(
+      builder: (context, constraints) => _buildAnchor(
+        context,
+        palette,
+        l10n,
+        constraints.maxWidth.isFinite ? constraints.maxWidth : null,
+      ),
+    );
+  }
+
+  Widget _buildAnchor(
+    BuildContext context,
+    AppPalette palette,
+    AppL10n l10n,
+    double? fieldWidth,
+  ) {
+    return MenuAnchor(
+      style: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(palette.surfaceRaised),
+        visualDensity: VisualDensity.compact,
+        minimumSize: fieldWidth == null
+            ? null
+            : WidgetStatePropertyAll(Size(fieldWidth, 0)),
+      ),
+      menuChildren: [
+        for (final c in choices)
+          CheckboxMenuButton(
+            value: selected.contains(c),
+            // 关键：勾一项后菜单保持打开，才能连续勾多项。
+            closeOnActivate: false,
+            onChanged: (v) => _toggle(c, v ?? false),
+            // MenuAnchor 的面板按内容宽度绘制；把每行撑到输入框宽度，
+            // 视觉上才和单选下拉一样「贴住」输入框而不是缩成一小条。
+            child: SizedBox(
+              width: fieldWidth == null
+                  ? null
+                  : math.max(120.0, fieldWidth - _menuRowChromeWidth),
+              child: Text(
+                c,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+          ),
+      ],
+      builder: (context, controller, _) {
+        return InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () =>
+              controller.isOpen ? controller.close() : controller.open(),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 44),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: palette.surfaceRaised,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: palette.accent),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.checklist_rounded, size: 18, color: palette.muted),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: selected.isEmpty
+                      ? Text(
+                          l10n.projectMultiSelectPick,
+                          style: TextStyle(color: palette.muted, fontSize: 13),
+                        )
+                      : Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final v in selected)
+                              _SelectedChip(
+                                label: v,
+                                onRemove: () => _toggle(v, false),
+                              ),
+                          ],
+                        ),
+                ),
+                const SizedBox(width: 6),
+                if (selected.isNotEmpty)
+                  Text(
+                    l10n.projectMultiSelectSelected(selected.length),
+                    style: TextStyle(color: palette.accent, fontSize: 11.5),
+                  ),
+                Icon(Icons.arrow_drop_down_rounded, color: palette.muted),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SelectedChip extends StatelessWidget {
+  const _SelectedChip({required this.label, required this.onRemove});
+
+  final String label;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(milliseconds: 500),
+      child: Container(
+        padding: const EdgeInsets.only(left: 8, right: 4, top: 3, bottom: 3),
+        decoration: BoxDecoration(
+          color: palette.surface,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: palette.borderSubtle),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 枚举值可能很长（或左侧面板很窄）：截断而不是把 chip 撑破。
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+                style: TextStyle(color: palette.text, fontSize: 12),
+              ),
+            ),
+            const SizedBox(width: 2),
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: onRemove,
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(
+                  Icons.close_rounded,
+                  size: 12,
+                  color: palette.muted,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

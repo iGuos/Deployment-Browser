@@ -117,6 +117,37 @@ class BuildParameter {
     return out;
   }
 
+  /// 一次「点击构建」要发出的若干次触发之一：参数快照 + 用于区分的短标签。
+  ///
+  /// 单选时只有一条、[label] 为 null；某个 choice 参数开启多选时，
+  /// 每个选中的值各自展开成一条，[label] 即该值（用于 run tab / 通知区分）。
+  static List<({Map<String, String> parameters, String? label})>
+      expandForMultiTrigger(
+    Map<String, String> merged, {
+    String? multiParamName,
+    List<String> multiValues = const [],
+  }) {
+    if (multiParamName == null || multiValues.isEmpty) {
+      return [(parameters: merged, label: null)];
+    }
+    // 去重并保持勾选顺序：同一个值发两次没有意义。
+    final seen = <String>{};
+    final out = <({Map<String, String> parameters, String? label})>[];
+    for (final v in multiValues) {
+      if (!seen.add(v)) continue;
+      out.add((parameters: {...merged, multiParamName: v}, label: v));
+    }
+    if (out.isEmpty) return [(parameters: merged, label: null)];
+    return out;
+  }
+
+  /// 该参数是否可以在发版页开启「多选 → 发 N 次」。
+  ///
+  /// 只放开 Jenkins 声明了枚举值的 choice 参数：自由输入 / 分支类参数多选
+  /// 语义不清（用户可能只是想改一次值），也容易误触发一堆构建。
+  bool get supportsMultiSelect =>
+      kind == BuildParameterKind.choice && choices.length > 1;
+
   static BuildParameterKind _kindFromClass(String cls) {
     // gitparameter 必须放在 string 检测之前，避免被旧版插件的 `gitparameterstring` 误命中
     if (cls.contains('gitparameter') || cls.contains('gitbranch')) {

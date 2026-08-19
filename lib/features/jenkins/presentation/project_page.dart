@@ -41,6 +41,10 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
   String? _selectedBranchFullName;
   Map<String, String> _parameterValues = {};
 
+  /// 当前开启「多选 → 发 N 次」的参数名（产品约束：最多一个），以及其勾选值。
+  String? _multiSelectParam;
+  List<String> _multiSelectValues = const [];
+
   /// 本次发版选定的 Slack 通知人（从设置候选池里挑；为空则不通知）。
   List<SlackRecipient> _notifyTargets = const [];
 
@@ -109,11 +113,24 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
                   onSelectBranch: (n) => setState(() {
                     _selectedBranchFullName = n;
                     _parameterValues = {};
+                    // 换分支后参数定义可能不同，多选选择一并清掉，避免带着旧值发 N 次。
+                    _multiSelectParam = null;
+                    _multiSelectValues = const [];
                   }),
                   parameterValues: _parameterValues,
                   onChangeParameter: (k, v) => setState(
                     () => _parameterValues = {..._parameterValues, k: v},
                   ),
+                  multiSelectParam: _multiSelectParam,
+                  multiSelectValues: _multiSelectValues,
+                  onToggleMultiSelect: (name, on) => setState(() {
+                    _multiSelectParam = on ? name : null;
+                    _multiSelectValues = const [];
+                  }),
+                  onChangeMultiSelectValues: (name, values) => setState(() {
+                    _multiSelectParam = name;
+                    _multiSelectValues = values;
+                  }),
                   onTrigger: _onTrigger,
                   onRefresh: invalidateDetail,
                   activeJobFullName: _activeJobFullName,
@@ -168,6 +185,15 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
       ).showSnackBar(const SnackBar(content: Text('请先选择要发版的分支')));
       return;
     }
+    final multiParam = _multiSelectParam;
+    if (multiParam != null && _multiSelectValues.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppL10n.of(context).projectMultiSelectEmpty(multiParam)),
+        ),
+      );
+      return;
+    }
     final detail = await ref.read(
       projectDetailProvider(_detailKey(_activeJobFullName)).future,
     );
@@ -175,25 +201,68 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
       detail.parameters,
       _parameterValues,
     );
+    // 刷新后项目的枚举值可能已变化，勾选里过期的值直接丢掉，
+    // 别拿去触发注定被 Jenkins 拒绝的构建。
+    var multiValues = _multiSelectValues;
+    if (multiParam != null) {
+      final def = detail.parameters
+          .where((p) => p.name == multiParam)
+          .firstOrNull;
+      if (def != null && def.choices.isNotEmpty) {
+        multiValues = multiValues
+            .where((v) => def.choices.contains(v))
+            .toList(growable: false);
+      }
+      if (multiValues.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                AppL10n.of(context).projectMultiSelectEmpty(multiParam),
+              ),
+            ),
+          );
+        }
+        return;
+      }
+    }
+    // 多选 = 同一份参数按勾选的值展开成 N 份；底层仍是 N 次独立的普通触发。
+    final variants = BuildParameter.expandForMultiTrigger(
+      merged,
+      multiParamName: multiParam,
+      multiValues: multiValues,
+    );
 
-    // 每次点击都创建一个独立的 run（→ 独立 tab、独立 controller）。
-    // run tab 状态放在 provider 中，避免关闭其它工程 tab 导致本页临时重建时丢失。
-    final handle = ref
-        .read(projectRunTabsProvider(_runTabsKey).notifier)
-        .addRun(_activeJobFullName);
-    final controller = ref.read(releaseControllerProvider(handle).notifier);
     final alias =
         ref.read(jobAliasProvider(widget.jenkinsAccountId))[widget.fullName];
-    await controller.trigger(
-      parameters: merged,
-      slackRecipients: _notifyTargets,
-      jobAlias: alias,
-    );
+    for (final variant in variants) {
+      // 每一次触发都创建一个独立的 run（→ 独立 tab、独立 controller）。
+      // run tab 状态放在 provider 中，避免关闭其它工程 tab 导致本页临时重建时丢失。
+      final handle = ref
+          .read(projectRunTabsProvider(_runTabsKey).notifier)
+          .addRun(_activeJobFullName);
+      final controller = ref.read(releaseControllerProvider(handle).notifier);
+      await controller.trigger(
+        parameters: variant.parameters,
+        slackRecipients: _notifyTargets,
+        jobAlias: alias,
+        variantLabel: variant.label,
+      );
+    }
 
     // 本次发版的通知人已随 run 固化进对应 controller 状态（右侧表头展示）；
     // 清空发版页的选择，下一次构建从空白开始，避免误带上一次的通知人。
     if (mounted) {
       setState(() => _notifyTargets = const []);
+      if (variants.length > 1) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              AppL10n.of(context).projectTriggeredTimes(variants.length),
+            ),
+          ),
+        );
+      }
     }
   }
 }
@@ -207,6 +276,10 @@ class _LeftPane extends ConsumerWidget {
     required this.onSelectBranch,
     required this.parameterValues,
     required this.onChangeParameter,
+    required this.multiSelectParam,
+    required this.multiSelectValues,
+    required this.onToggleMultiSelect,
+    required this.onChangeMultiSelectValues,
     required this.onTrigger,
     required this.onRefresh,
     required this.activeJobFullName,
@@ -225,6 +298,14 @@ class _LeftPane extends ConsumerWidget {
   final void Function(String? fullName) onSelectBranch;
   final Map<String, String> parameterValues;
   final void Function(String key, String value) onChangeParameter;
+
+  /// 「多选 → 发 N 次」当前状态（最多一个参数可多选）。
+  final String? multiSelectParam;
+  final List<String> multiSelectValues;
+  final void Function(String paramName, bool enabled) onToggleMultiSelect;
+  final void Function(String paramName, List<String> values)
+      onChangeMultiSelectValues;
+
   final Future<void> Function() onTrigger;
   final VoidCallback onRefresh;
   final String activeJobFullName;
@@ -356,6 +437,10 @@ class _LeftPane extends ConsumerWidget {
               parameters: paramsDetail.parameters,
               values: parameterValues,
               onChange: onChangeParameter,
+              multiSelectParam: multiSelectParam,
+              multiSelectValues: multiSelectValues,
+              onToggleMultiSelect: onToggleMultiSelect,
+              onChangeMultiSelectValues: onChangeMultiSelectValues,
               branchOptionsLoader: (paramName, {bool forceRefresh = false}) async {
                 final repo = ref.read(
                   jenkinsRepositoryForAccountProvider(widget.jenkinsAccountId),
@@ -426,7 +511,11 @@ class _LeftPane extends ConsumerWidget {
                     )
                   : const Icon(Icons.play_arrow_rounded),
               label: Text(
-                triggering ? l10n.projectTriggering : l10n.projectTrigger,
+                triggering
+                    ? l10n.projectTriggering
+                    : (multiSelectValues.length > 1
+                          ? l10n.projectTriggerTimes(multiSelectValues.length)
+                          : l10n.projectTrigger),
               ),
               onPressed: triggering ? null : onTrigger,
               style: FilledButton.styleFrom(
@@ -619,10 +708,14 @@ class _RunTabBar extends ConsumerWidget {
   }
 
   String _runLabel(ReleaseRunState state, int index) {
-    if (state.buildNumber != null) return '#${state.buildNumber}';
-    if (state.queueItemId != null) return '队列 ${state.queueItemId}';
-    if (state.triggering) return '触发中';
-    return '运行 ${index + 1}';
+    // 一次点击因多选展开出的多个 run，只靠 #号 / 队列号区分不了「哪一路」，
+    // 所以带上多选取值（如 `#128 · admin-api`）。
+    final variant = state.variantLabel;
+    final suffix = (variant == null || variant.isEmpty) ? '' : ' · $variant';
+    if (state.buildNumber != null) return '#${state.buildNumber}$suffix';
+    if (state.queueItemId != null) return '队列 ${state.queueItemId}$suffix';
+    if (state.triggering) return '触发中$suffix';
+    return '运行 ${index + 1}$suffix';
   }
 
   Color _runColor(ReleaseRunState state, AppPalette palette) {

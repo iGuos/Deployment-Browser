@@ -178,6 +178,32 @@ class JenkinsRepository {
     }
   }
 
+  /// 只知道 queueId 时用它复查队列项（队列项约 5 分钟后过期）。
+  Future<QueueItem?> fetchQueueItemById(int queueId) async {
+    try {
+      return await _api.fetchQueueItemById(queueId);
+    } catch (e) {
+      throw toJenkinsException(e);
+    }
+  }
+
+  /// 按 queueId 在构建历史里反查构建号；找不到返回 null。
+  Future<int?> findBuildNumberByQueueId(
+    String jobFullName,
+    int queueId, {
+    int count = 30,
+  }) async {
+    try {
+      return await _api.findBuildNumberByQueueId(
+        jobFullName,
+        queueId,
+        count: count,
+      );
+    } catch (e) {
+      throw toJenkinsException(e);
+    }
+  }
+
   Future<List<BuildStage>> fetchStages(String jobFullName, int buildNumber) =>
       _api.fetchStages(jobFullName, buildNumber);
 

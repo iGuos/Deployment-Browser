@@ -312,7 +312,7 @@ class JenkinsApi {
     final path = _jobApiPath(jobFullName);
     final res = await _dio.get<Map<String, dynamic>>(path, queryParameters: {
       'tree':
-          'builds[number,url,result,timestamp,duration,estimatedDuration,building,displayName,fullDisplayName]{0,$count}',
+          'builds[number,url,result,timestamp,duration,estimatedDuration,building,displayName,fullDisplayName,queueId]{0,$count}',
     });
     final builds = (res.data?['builds'] as List?) ?? const [];
     return builds
@@ -330,7 +330,7 @@ class JenkinsApi {
     final res = await _dio.get<Map<String, dynamic>>(path, queryParameters: {
       'tree':
           'builds['
-          'number,url,result,timestamp,duration,estimatedDuration,building,displayName,fullDisplayName,'
+          'number,url,result,timestamp,duration,estimatedDuration,building,displayName,fullDisplayName,queueId,'
           'changeSet[items[commitId]],changeSets[items[commitId]],'
           'actions[parameters[name,value],causes[userId,userName,shortDescription,_class],lastBuiltRevision[SHA1]]'
           ']{0,$count}',
@@ -787,6 +787,37 @@ class JenkinsApi {
     final res = await _dio.get<Map<String, dynamic>>(apiUrl);
     if (res.statusCode != 200 || res.data == null) return null;
     return QueueItem.fromJson(res.data!);
+  }
+
+  /// 按队列项 id 拉取队列项（相对 Jenkins 根路径，不依赖触发时返回的绝对 URL）。
+  ///
+  /// 供只持有 `queueId` 的调用方（如 MCP 客户端跨进程复查发版）使用。
+  /// Jenkins 只在队列里保留已出队项约 5 分钟，之后返回 404 → null，
+  /// 那时应改用 [findBuildNumberByQueueId] 到构建历史里反查。
+  Future<QueueItem?> fetchQueueItemById(int queueId) =>
+      fetchQueueItem('/queue/item/$queueId/');
+
+  /// 在最近 [count] 条构建里按 `queueId` 反查构建号；找不到返回 null。
+  ///
+  /// 队列项过期后这是把「一次触发」映射回「一条 build」的唯一可靠手段，
+  /// 同一项目短时间内多次发版也不会串号。
+  Future<int?> findBuildNumberByQueueId(
+    String jobFullName,
+    int queueId, {
+    int count = 30,
+  }) async {
+    final path = _jobApiPath(jobFullName);
+    final res = await _dio.get<Map<String, dynamic>>(
+      path,
+      queryParameters: {'tree': 'builds[number,queueId]{0,$count}'},
+    );
+    final builds = (res.data?['builds'] as List?) ?? const [];
+    for (final b in builds.whereType<Map<String, dynamic>>()) {
+      if ((b['queueId'] as num?)?.toInt() != queueId) continue;
+      final number = (b['number'] as num?)?.toInt();
+      if (number != null && number > 0) return number;
+    }
+    return null;
   }
 
   /// 轮询队列项直到拿到 build number 或被取消；超时返回 null。

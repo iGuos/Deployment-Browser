@@ -35,6 +35,7 @@ class JenkinsBuild {
     this.result,
     this.displayName,
     this.fullDisplayName,
+    this.queueId,
   });
 
   final int number;
@@ -46,6 +47,13 @@ class JenkinsBuild {
   final String? result;
   final String? displayName;
   final String? fullDisplayName;
+
+  /// 触发本次构建的队列项 id（Jenkins `Run.queueId`）。
+  ///
+  /// 这是「一次触发」与「一条 build」之间唯一稳定的关联键：触发接口同步返回
+  /// `/queue/item/{id}/`，队列项过期后仍可用它在构建历史里反查构建号。
+  /// Jenkins 对老构建 / 未知来源返回 -1，这里统一归一化为 null。
+  final int? queueId;
 
   BuildResult get resultEnum => BuildResult.fromString(result, building: building);
 
@@ -70,6 +78,10 @@ class JenkinsBuild {
       result: json['result'] as String?,
       displayName: json['displayName'] as String?,
       fullDisplayName: json['fullDisplayName'] as String?,
+      queueId: switch ((json['queueId'] as num?)?.toInt()) {
+        final int id when id >= 0 => id,
+        _ => null,
+      },
     );
   }
 }

@@ -25,6 +25,10 @@ const String kToolTriggerBuild = 'trigger_build';
 const String kToolGetBuildStatus = 'get_build_status';
 const String kToolGetReleaseHistory = 'get_release_history';
 
+/// `trigger_build` 默认最多等多少秒，直到 Jenkins 给本次触发分配构建号。
+/// 常见 Jenkins quiet period 为 5 秒，再留出排队 / 拉起执行器的余量。
+const int kMcpDefaultTriggerWaitSeconds = 20;
+
 Map<String, dynamic> _obj(
   Map<String, dynamic> properties, {
   List<String> required = const [],
@@ -67,7 +71,11 @@ final List<McpToolSpec> kMcpToolSpecs = [
   ),
   McpToolSpec(
     name: kToolTriggerBuild,
-    description: '根据账号 ID、项目 fullName 与参数触发一次发版构建；立即返回队列地址与（若已分配）构建号。',
+    description: '根据账号 ID、项目 fullName 与参数触发一次发版构建。'
+        '返回本次发版的 queueId（触发即确定，是关联本次发版的唯一键）与 buildNumber（发版号）；'
+        '默认最多等待 $kMcpDefaultTriggerWaitSeconds 秒直到 Jenkins 分配 buildNumber，'
+        '仍未分配时 buildNumber 为 null 且 queued=true，可用 get_build_status 传 queueId 换回发版号。'
+        '同一项目连续多次发版时，请始终用 queueId / buildNumber 关联，不要按时间猜测。',
     inputSchema: _obj(
       {
         'accountId': _accountIdProp,
@@ -77,20 +85,32 @@ final List<McpToolSpec> kMcpToolSpecs = [
           'description': '构建参数键值对（值统一按字符串处理）；未提供的参数会用项目默认值补齐。',
           'additionalProperties': {'type': 'string'},
         },
+        'waitForBuildNumberSeconds': {
+          'type': 'integer',
+          'description': '等待 Jenkins 分配发版号的最长秒数，0–180，默认 $kMcpDefaultTriggerWaitSeconds；'
+              '传 0 表示立刻返回（可能只有 queueId）。',
+        },
       },
       required: ['accountId', 'projectFullName'],
     ),
   ),
   McpToolSpec(
     name: kToolGetBuildStatus,
-    description: '根据账号 ID 与项目 fullName 查询发版进度（构建状态、流水线阶段）及控制台日志；不传 buildNumber 时取最近一次构建。',
+    description: '根据账号 ID 与项目 fullName 查询发版进度（构建状态、流水线阶段）及控制台日志。'
+        '定位方式优先级：buildNumber > queueId（trigger_build 返回的关联键，会自动换回发版号）> 最近一次构建。'
+        '程序化轮询请传 queueId 或 buildNumber，否则并发发版时可能读到别人的构建。',
     inputSchema: _obj(
       {
         'accountId': _accountIdProp,
         'projectFullName': _projectProp,
         'buildNumber': {
           'type': 'integer',
-          'description': '构建号；省略则使用最近一次构建。',
+          'description': '构建号（发版号）；与 queueId 都省略时使用最近一次构建。',
+        },
+        'queueId': {
+          'type': 'integer',
+          'description': 'trigger_build 返回的 queueId；用于把「某一次触发」精确换回其发版号。'
+              '若该次发版仍在排队，返回 found=false 且 queued=true。',
         },
         'logStart': {
           'type': 'integer',
@@ -106,7 +126,7 @@ final List<McpToolSpec> kMcpToolSpecs = [
   ),
   McpToolSpec(
     name: kToolGetReleaseHistory,
-    description: '根据账号 ID 与项目 fullName 查询历史发版记录（构建号、结果、触发人、参数快照、Git 提交）。',
+    description: '根据账号 ID 与项目 fullName 查询历史发版记录（构建号、queueId、结果、触发人、参数快照、Git 提交）。',
     inputSchema: _obj(
       {
         'accountId': _accountIdProp,

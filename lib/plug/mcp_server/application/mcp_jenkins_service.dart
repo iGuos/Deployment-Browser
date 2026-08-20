@@ -373,8 +373,9 @@ class McpJenkinsService {
   ) async {
     try {
       final items = await repo.fetchQueueItemsForJob(record.projectFullName);
-      return pickUnclaimedQueueItemId(
+      return pickOwnQueueItemId(
         items,
+        record.parameters,
         (id) => _triggers.isQueueIdClaimed(
           record.projectFullName,
           id,
@@ -578,10 +579,13 @@ class McpJenkinsService {
       fullName,
       count: count.clamp(1, 200),
     );
+    final attributionKey = '${account.id}::$fullName';
     return McpCallOutcome.ok({
       'accountId': externalId,
       'projectFullName': fullName,
-      'history': rows.map(_historyJson).toList(growable: false),
+      'history': rows
+          .map((r) => _historyJson(r, attributionKey))
+          .toList(growable: false),
     });
   }
 
@@ -681,12 +685,31 @@ class McpJenkinsService {
         'startTimeMillis': s.startTimeMillis,
       };
 
-  Map<String, dynamic> _historyJson(JenkinsReleaseHistoryRow r) => {
+  Map<String, dynamic> _historyJson(
+    JenkinsReleaseHistoryRow r,
+    String attributionKey,
+  ) => {
         'build': _buildJson(r.build),
         'parameters': r.parameters,
         'releasedBy': r.releasedBy,
         'gitRevision': r.gitRevision,
+        // 这条构建是本服务哪一次 trigger_build 打出来的；不是经本服务触发
+        //（UI 发的 / 别人在 Jenkins 上手动发的 / 服务重启前的）则为 null。
+        // 有了它，调用方可以拿历史反查「我那次发版最后跑成什么样」。
+        'triggerId': _triggerIdForBuild(attributionKey, r.build.number),
       };
+
+  /// 反查某条构建对应的 triggerId。
+  ///
+  /// 归属台账里的 owner 也可能是发版 UI 的 runId，所以要回台账确认这个 owner
+  /// 真的是一次 MCP 触发，避免把 UI 的内部标识泄露给调用方。
+  String? _triggerIdForBuild(String attributionKey, int buildNumber) {
+    final owner = _ref
+        .read(buildAttributionRegistryProvider)
+        .ownerOf(attributionKey, buildNumber);
+    if (owner == null) return null;
+    return _triggers.byId(owner) == null ? null : owner;
+  }
 
   String _str(Object? v) => v?.toString().trim() ?? '';
 

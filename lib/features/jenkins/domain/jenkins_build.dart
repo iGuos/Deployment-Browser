@@ -213,6 +213,7 @@ class QueueItem {
     required this.cancelled,
     required this.executable,
     this.why,
+    this.parameters = const {},
   });
 
   final int id;
@@ -223,6 +224,12 @@ class QueueItem {
 
   final String? why;
 
+  /// 排队项自带的参数（Jenkins `params` 字段）。
+  ///
+  /// 队列还没出队时构建号尚不存在，这是**唯一**能判断「这个排队项是不是我这次
+  /// 触发建立的」的依据 —— 触发响应没给出 `/queue/item/{id}/` 时全靠它。
+  final Map<String, String> parameters;
+
   bool get isWaiting => executable == null && !cancelled;
   bool get isStarted => executable != null;
 
@@ -232,6 +239,7 @@ class QueueItem {
       id: (json['id'] as num?)?.toInt() ?? 0,
       cancelled: (json['cancelled'] as bool?) ?? false,
       why: json['why'] as String?,
+      parameters: parseQueueItemParams(json['params']),
       executable: exec is Map<String, dynamic>
           ? (
               number: (exec['number'] as num?)?.toInt() ?? 0,
@@ -240,4 +248,21 @@ class QueueItem {
           : null,
     );
   }
+}
+
+/// 解析队列项的 `params` 字段。
+///
+/// Jenkins 给的是一整个字符串，形如 `"\nSERVICE=admin-api\nGIT_BRANCH=main"`；
+/// 值里可能带 `=`，所以只按**第一个** `=` 切分。
+Map<String, String> parseQueueItemParams(Object? raw) {
+  if (raw is! String || raw.trim().isEmpty) return const {};
+  final out = <String, String>{};
+  for (final line in raw.split('\n')) {
+    final text = line.trim();
+    if (text.isEmpty) continue;
+    final i = text.indexOf('=');
+    if (i <= 0) continue;
+    out[text.substring(0, i).trim()] = text.substring(i + 1).trim();
+  }
+  return out;
 }

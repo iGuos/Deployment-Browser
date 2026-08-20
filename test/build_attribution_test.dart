@@ -34,6 +34,14 @@ void main() {
       expect(r.claim('acct::job', 314, 'run-b'), isTrue);
     });
 
+    test('ownerOf 可反查某条构建的持有者', () {
+      final r = BuildAttributionRegistry();
+      r.claim('acct::job', 316, 'trg_1_7');
+      expect(r.ownerOf('acct::job', 316), 'trg_1_7');
+      expect(r.ownerOf('acct::job', 315), isNull);
+      expect(r.ownerOf('acct::other', 316), isNull);
+    });
+
     test('release 后别人可以认领；不同项目互不影响', () {
       final r = BuildAttributionRegistry();
       r.claim('acct::job', 314, 'run-a');

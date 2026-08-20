@@ -36,6 +36,13 @@ class BuildAttributionRegistry {
     return holder != null && holder != ownerId;
   }
 
+  /// 某个构建号当前的持有者；没有则 null。
+  ///
+  /// 用于反向对账：拿一条构建号问「这是谁发的」——发版 tab 的 runId 或 MCP 的
+  /// triggerId。
+  String? ownerOf(String jobFullName, int buildNumber) =>
+      _owners[jobFullName]?[buildNumber];
+
   /// 某 owner 当前持有的构建号；没有则 null。
   int? numberOf(String jobFullName, String ownerId) {
     final byNumber = _owners[jobFullName];

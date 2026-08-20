@@ -1,3 +1,4 @@
+import '../../../features/jenkins/domain/build_attribution.dart';
 import '../../../features/jenkins/domain/jenkins_build.dart';
 
 /// 一次 `trigger_build` 调用的本地台账。
@@ -103,17 +104,45 @@ class McpTriggerRegistry {
           r.queueId == queueId);
 }
 
-/// 从队列里挑一个属于本次触发的排队项：按 id 升序取第一个未取消、未被别人认领的。
+/// 从队列里挑出属于本次触发的排队项。
 ///
-/// 队列是 FIFO，升序取用能让「先触发的先认领」，并发触发同一项目也不会互抢。
-int? pickUnclaimedQueueItemId(
+/// 触发响应没给出 `/queue/item/{id}/` 时，这是拿回 queueId 的唯一途径，而队列里
+/// 可能同时躺着别人的、或本次发版另一路参数的排队项。因此判定顺序是：
+///
+/// 1. 参数快照与本次触发一致（[triggeredParameters]）的优先——这是身份判定，
+///    不依赖请求到达顺序，真并发也不会张冠李戴；
+/// 2. 参数无从判断（Jenkins 未回传 `params`）的排在后面，按 id 升序兜底；
+/// 3. 参数明确不同的一律排除；已被别的触发认领的跳过。
+///
+/// 一个都挑不出来时返回 null —— 宁可继续等，也不要认领别人的排队项。
+int? pickOwnQueueItemId(
   List<QueueItem> items,
+  Map<String, String> triggeredParameters,
   bool Function(int id) claimed,
 ) {
-  final sorted = items.where((i) => i.id > 0 && !i.cancelled).toList()
-    ..sort((a, b) => a.id.compareTo(b.id));
-  for (final item in sorted) {
-    if (!claimed(item.id)) return item.id;
+  final candidates =
+      items
+          .where((i) => i.id > 0 && !i.cancelled)
+          .map(
+            (i) => (
+              item: i,
+              match: matchBuildParameters(
+                triggered: triggeredParameters,
+                snapshot: i.parameters,
+              ),
+            ),
+          )
+          .where((c) => c.match != ParameterMatch.mismatched)
+          .toList()
+        ..sort((a, b) {
+          final byMatch = (a.match == ParameterMatch.matched ? 0 : 1).compareTo(
+            b.match == ParameterMatch.matched ? 0 : 1,
+          );
+          if (byMatch != 0) return byMatch;
+          return a.item.id.compareTo(b.item.id);
+        });
+  for (final c in candidates) {
+    if (!claimed(c.item.id)) return c.item.id;
   }
   return null;
 }

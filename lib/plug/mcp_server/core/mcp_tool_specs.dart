@@ -133,7 +133,11 @@ final List<McpToolSpec> kMcpToolSpecs = [
   ),
   McpToolSpec(
     name: kToolGetReleaseHistory,
-    description: '根据账号 ID 与项目 fullName 查询历史发版记录（构建号、queueId、结果、触发人、参数快照、Git 提交）。',
+    description: '根据账号 ID 与项目 fullName 查询历史发版记录'
+        '（构建号、queueId、结果、触发人、参数快照、Git 提交）。'
+        '每条还会带上 triggerId：该构建由本接口哪一次 trigger_build 触发，'
+        '不是经本接口触发（界面发版 / 在 Jenkins 上手动发 / 服务重启前）则为 null，'
+        '可用它把历史记录与自己发过的版一一对上。',
     inputSchema: _obj(
       {
         'accountId': _accountIdProp,

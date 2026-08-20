@@ -859,7 +859,8 @@ class JenkinsApi {
     final res = await _dio.get<Map<String, dynamic>>(
       '/queue/api/json',
       queryParameters: {
-        'tree': 'items[id,why,cancelled,executable[number,url],task[name,fullName,url]]',
+        'tree':
+            'items[id,why,cancelled,params,executable[number,url],task[name,fullName,url]]',
       },
     );
     final items = (res.data?['items'] as List?) ?? const [];

@@ -9,6 +9,7 @@ import '../domain/build_parameter.dart';
 import '../domain/jenkins_build.dart';
 import '../domain/jenkins_node.dart';
 import '../domain/ref_option.dart';
+import '../domain/trigger_result.dart';
 import 'jenkins_api.dart';
 
 /// 高层 Repository。封装错误转换 + 简单缓存。
@@ -89,7 +90,7 @@ class JenkinsRepository {
     }
   }
 
-  Future<String> triggerBuild(
+  Future<TriggerResult> triggerBuild(
     String jobFullName, {
     Map<String, String> parameters = const {},
   }) async {

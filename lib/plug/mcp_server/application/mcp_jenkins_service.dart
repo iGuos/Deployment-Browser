@@ -8,11 +8,13 @@ import '../../../features/jenkins/domain/build_parameter.dart';
 import '../../../features/jenkins/domain/jenkins_build.dart';
 import '../../../features/jenkins/domain/jenkins_node.dart';
 import '../../../features/jenkins/domain/jenkins_tree_transform.dart';
+import '../../../features/jenkins/domain/trigger_result.dart';
 import '../../../features/settings/data/jenkins_accounts_repository.dart';
 import '../../../features/settings/domain/jenkins_account.dart';
 import '../core/mcp_protocol.dart';
 import '../core/mcp_token.dart';
 import '../core/mcp_tool_specs.dart';
+import 'mcp_server_log_provider.dart';
 import 'mcp_server_state_provider.dart';
 import 'mcp_trigger_registry.dart';
 
@@ -152,9 +154,10 @@ class McpJenkinsService {
       triggeredAt: DateTime.now().millisecondsSinceEpoch,
       parameters: merged,
     );
-    final queueUrl = await repo.triggerBuild(fullName, parameters: merged);
-    record.queueId = _queueIdFromUrl(queueUrl);
+    final trigger = await repo.triggerBuild(fullName, parameters: merged);
+    record.queueId = _queueIdFromUrl(trigger.location);
     if (record.queueId != null) record.queueIdSource = 'location';
+    _logTriggerDiagnostics(fullName, record, trigger);
 
     // 程序化调用必须拿到本次发版对应的构建号，否则同一项目连续多次发版无法关联。
     // 因此这里在 waitSeconds 内轮询队列 / 构建历史，直到 Jenkins 分配构建号。
@@ -178,6 +181,9 @@ class McpJenkinsService {
       // 部分实例 / 反向代理不返回 /queue/item/{id}/ 时为 null，此时以 triggerId 为准。
       'queueId': record.queueId,
       'queueIdSource': record.queueIdSource,
+      // 为什么这次没拿到 queueId：把触发响应的状态码 / 命中策略 / 各次尝试摊开，
+      // 便于调用方与我们排查（不含 Jenkins 地址与响应体）。
+      'triggerDiagnostics': _triggerDiagnosticsJson(trigger),
       'buildNumber': located.buildNumber,
       'buildNumberSource': located.source,
       'queued': located.buildNumber == null && !located.cancelled,
@@ -189,6 +195,50 @@ class McpJenkinsService {
       'message': _triggerMessage(located, record),
     });
   }
+
+  /// 把触发过程写进 MCP 日志面板。
+  ///
+  /// `location` 只记路径（去掉 Jenkins 地址），4xx 的响应体片段只留在本机日志里，
+  /// 这是排查「为什么 buildWithParameters 返回 400 → 退化到 json=/build →
+  /// 没有 /queue/item/ → queueId 为 null」的唯一线索。
+  void _logTriggerDiagnostics(
+    String fullName,
+    McpTriggerRecord record,
+    TriggerResult trigger,
+  ) {
+    final log = _ref.read(mcpServerLogProvider.notifier);
+    log.add(
+      'trigger_build $fullName：HTTP ${trigger.statusCode} '
+      'strategy=${trigger.strategy}(${trigger.endpoint}) '
+      'location=${trigger.locationPath} '
+      'queueId=${record.queueId ?? 'null'} '
+      'triggerId=${record.triggerId}',
+    );
+    if (!trigger.isQueueItemLocation) {
+      log.add(
+        '  ↳ Location 不是 /queue/item/{id}/，本次无法从触发响应拿到 queueId，'
+        '将改为扫描队列 / 构建历史认领。',
+      );
+    }
+    for (final a in trigger.attempts.where((a) => a.statusCode >= 400)) {
+      log.add('  ↳ 失败尝试 $a');
+    }
+  }
+
+  /// 回传给调用方的诊断（脱敏：不含 Jenkins 地址、不含响应体）。
+  Map<String, dynamic> _triggerDiagnosticsJson(TriggerResult trigger) => {
+        'status': trigger.statusCode,
+        'strategy': trigger.strategy,
+        'endpoint': trigger.endpoint,
+        'locationIsQueueItem': trigger.isQueueItemLocation,
+        'attempts': trigger.attempts
+            .map((a) => {
+                  'strategy': a.strategy,
+                  'endpoint': a.endpoint,
+                  'status': a.statusCode,
+                })
+            .toList(growable: false),
+      };
 
   String _triggerMessage(_LocatedBuild located, McpTriggerRecord record) {
     if (located.cancelled) return '构建在队列中被取消，本次发版未开始。';

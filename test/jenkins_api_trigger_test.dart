@@ -42,10 +42,10 @@ void main() {
     );
 
     final api = JenkinsApi(dio);
-    final queueUrl = await api.triggerBuild(
+    final queueUrl = (await api.triggerBuild(
       'team/app',
       parameters: {'SERVICE': 'orders'},
-    );
+    )).location;
 
     expect(queueUrl, 'http://jenkins.example/queue/item/42/');
     expect(captured, isNotNull);
@@ -110,7 +110,7 @@ void main() {
     );
 
     final api = JenkinsApi(dio);
-    final queueUrl = await api.triggerBuild('job/a', parameters: {'X': 'y'});
+    final queueUrl = (await api.triggerBuild('job/a', parameters: {'X': 'y'})).location;
     expect(postCalls, 2);
     expect(queueUrl, contains('/queue/item/99/'));
   });
@@ -182,10 +182,10 @@ void main() {
     );
 
     final api = JenkinsApi(dio);
-    final queueUrl = await api.triggerBuild(
+    final queueUrl = (await api.triggerBuild(
       'team/app',
       parameters: {'SERVICE': 'orders'},
-    );
+    )).location;
     expect(queueUrl, 'http://jenkins.example/queue/item/77/');
     expect(posts, greaterThanOrEqualTo(2));
   });
@@ -244,11 +244,11 @@ void main() {
     );
 
     final api = JenkinsApi(dio);
-    final queueUrl = await api.triggerBuild(
+    final queueUrl = (await api.triggerBuild(
       'team/app',
       parameters: {'SERVICE': 'orders'},
       jobClass: 'org.jenkinsci.plugins.workflow.job.WorkflowJob',
-    );
+    )).location;
     expect(queueUrl, contains('/queue/item/55/'));
     expect(probedBuildWithParameters, isFalse,
         reason: '已知是 Pipeline 时不应再探测 buildWithParameters');
@@ -325,7 +325,7 @@ void main() {
         reason: '首次触发应有探测过程');
 
     firstRunFinished = true;
-    final queueUrl = await api.triggerBuild('team/app', parameters: {'SERVICE': 'orders'});
+    final queueUrl = (await api.triggerBuild('team/app', parameters: {'SERVICE': 'orders'})).location;
 
     expect(queueUrl, contains('/queue/item/'));
     expect(posts - probeCount, 1,

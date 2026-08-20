@@ -388,15 +388,16 @@ class ReleaseController extends Notifier<ReleaseRunState> {
         .read(reservedBuildNumberRegistryProvider)
         .reserve(_registryKey, historyFloor);
     try {
-      final returnedLocation = await repo.triggerBuild(
+      final triggerResult = await repo.triggerBuild(
         state.jobFullName,
         parameters: parameters,
       );
+      final returnedLocation = triggerResult.location;
       // 部分 Jenkins / 反代触发后 `Location` 不是 `/queue/item/{N}/` 而是 Job 主页 URL；
       // 此时按这个 URL 去 GET 永远拿不到 executable.number。
       // 我们用包含 `/queue/item/` 来识别合法 queue URL；不合法时只记录 triggeredAt，
       // 完全靠 build history + 时间戳兜底。
-      final isProperQueueUrl = returnedLocation.contains('/queue/item/');
+      final isProperQueueUrl = triggerResult.isQueueItemLocation;
       state = state.copyWith(
         triggering: false,
         queueUrl: isProperQueueUrl ? returnedLocation : null,

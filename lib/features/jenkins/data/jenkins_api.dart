@@ -7,6 +7,7 @@ import '../domain/build_parameter.dart';
 import '../domain/jenkins_build.dart';
 import '../domain/jenkins_node.dart';
 import '../domain/ref_option.dart';
+import '../domain/trigger_result.dart';
 
 /// 合成视图文件夹节点使用的 [JenkinsNode.fullName] 前缀（非 Jenkins 真实路径）。
 const String kJenkinsSyntheticViewFullNamePrefix = '__jenkins_view__/';
@@ -482,9 +483,11 @@ class JenkinsApi {
   /// - **Pipeline / WorkflowJob** 在部分实例上对 `buildWithParameters` 返回 **400**，需改用
   ///   `POST .../build`，表单字段 **`json={"parameter":[{"name":...,"value":...}]}`**（官方 Remote API 用法）。
   ///
-  /// 返回队列项 URL（形如 `https://.../queue/item/12345/`），可用 [pollQueueItem]
-  /// 等待 build 启动并取得 build number。
-  Future<String> triggerBuild(
+  /// 返回 [TriggerResult]：`location` 通常是队列项 URL（形如
+  /// `https://.../queue/item/12345/`），可用 [pollQueueItem] 等待 build 启动并取得
+  /// build number；`attempts` 记录了每次尝试的策略与响应码，用于排查
+  /// 「为什么这台 Jenkins 没给队列项地址」。
+  Future<TriggerResult> triggerBuild(
     String jobFullName, {
     Map<String, String> parameters = const {},
     String? jobClass,
@@ -496,6 +499,21 @@ class JenkinsApi {
       start = 4;
     }
     return _triggerBuildWithRetries(jobFullName, parameters, attempt: start);
+  }
+
+  /// 策略编号 → 实际打到哪个接口，仅用于诊断展示。
+  static String _endpointForStrategy(int strategy, {required bool hasParams}) {
+    if (!hasParams) return 'build';
+    return (strategy == 4 || strategy == 5) ? 'build' : 'buildWithParameters';
+  }
+
+  /// 4xx 响应体截断片段（压掉换行 / 连续空白，最多 200 字符）。
+  static String? _bodySnippet(Object? raw) {
+    final text = raw is String ? raw : raw?.toString();
+    if (text == null) return null;
+    final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (flat.isEmpty) return null;
+    return flat.length <= 200 ? flat : '${flat.substring(0, 200)}…';
   }
 
   static bool _isPipelineJob(String cls) {
@@ -563,21 +581,27 @@ class JenkinsApi {
     );
   }
 
-  Future<String> _triggerBuildWithRetries(
+  Future<TriggerResult> _triggerBuildWithRetries(
     String jobFullName,
     Map<String, String> parameters, {
     int attempt = 0,
     bool sessionRefreshed = false,
+    List<TriggerAttempt>? attempts,
   }) async {
     final hasParams = parameters.isNotEmpty;
     final maxAttempts = hasParams ? 6 : 4;
+    // 贯穿整条重试链的诊断台账：每次响应都记一笔，成功后随结果返回，
+    // 失败时并进异常信息——否则「为什么走到了 json=/build 策略」无从追查。
+    final log = attempts ?? <TriggerAttempt>[];
 
     if (attempt >= maxAttempts) {
+      final summary = log.where((a) => a.statusCode >= 400).join('；');
       throw JenkinsException(
         message:
             '触发构建失败：已尝试多种方式（buildWithParameters、Pipeline json=/build 等）仍被拒绝。'
             '请确认账号/API Token 有 Build 权限；反向代理是否剥离 Cookie 或 Jenkins-Crumb；'
-            'Pipeline Job 参数名是否与 Jenkins 一致。',
+            'Pipeline Job 参数名是否与 Jenkins 一致。'
+            '${summary.isEmpty ? '' : '尝试记录：$summary'}',
       );
     }
 
@@ -624,6 +648,14 @@ class JenkinsApi {
     }
 
     final code = res.statusCode ?? 0;
+    log.add(
+      TriggerAttempt(
+        strategy: attempt,
+        endpoint: _endpointForStrategy(attempt, hasParams: hasParams),
+        statusCode: code,
+        bodySnippet: code >= 400 ? _bodySnippet(res.data) : null,
+      ),
+    );
     if (code == 403 || code == 401) {
       // 第一次 403：很可能是 idle 后 session 失效。清掉 crumb+cookie，**同 strategy** 再试
       // 一次；否则一上来就推进 strategy，正常 Job 会被误推到 Pipeline json 路径。
@@ -634,6 +666,7 @@ class JenkinsApi {
           parameters,
           attempt: attempt,
           sessionRefreshed: true,
+          attempts: log,
         );
       }
       // 刷新过仍 403 → 真正的策略不匹配 / 权限问题，再推进策略试下一种
@@ -642,6 +675,7 @@ class JenkinsApi {
         parameters,
         attempt: attempt + 1,
         sessionRefreshed: true,
+        attempts: log,
       );
     }
     // buildWithParameters 在部分 Pipeline 上会 **400**，换 json=/build 后再试
@@ -651,6 +685,7 @@ class JenkinsApi {
         parameters,
         attempt: attempt + 1,
         sessionRefreshed: sessionRefreshed,
+        attempts: log,
       );
     }
     if (code >= 400) {
@@ -673,7 +708,13 @@ class JenkinsApi {
     }
     // 命中：记下策略编号，同 Job 下次直接复用，避免再来一遍 400 探测
     _successStrategy[jobFullName] = attempt;
-    return loc;
+    return TriggerResult(
+      location: loc,
+      statusCode: code,
+      strategy: attempt,
+      endpoint: _endpointForStrategy(attempt, hasParams: hasParams),
+      attempts: List<TriggerAttempt>.unmodifiable(log),
+    );
   }
 
   /// Pipeline 远程触发：`json` 字段为 JSON 字符串。

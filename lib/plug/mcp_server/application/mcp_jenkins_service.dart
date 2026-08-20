@@ -52,6 +52,8 @@ class McpJenkinsService {
           return await _triggerBuild(token, arguments);
         case kToolGetBuildStatus:
           return await _getBuildStatus(token, arguments);
+        case kToolStopBuild:
+          return await _stopBuild(token, arguments);
         case kToolGetReleaseHistory:
           return await _getReleaseHistory(token, arguments);
         default:
@@ -432,9 +434,16 @@ class McpJenkinsService {
         '请改用 buildNumber 或 queueId 查询，或重新 trigger_build。',
       );
     }
-    // 传了 triggerId 就以台账里的项目为准，避免调用方把项目名写错导致查错项目。
+    // 传了 triggerId 就以台账里的账号 / 项目为准：既免得调用方把项目名写错查错
+    // 项目，也让「只传 triggerId」成为合法用法（schema 里这两个参数非必填）。
     final externalId = record?.accountId ?? _str(args['accountId']);
     final fullName = record?.projectFullName ?? _str(args['projectFullName']);
+    if (externalId.isEmpty && fullName.isEmpty) {
+      return const McpCallOutcome.error(
+        '无法定位要查询的发版：请传 triggerId，'
+        '或同时传 accountId 与 projectFullName（可再配 buildNumber / queueId）。',
+      );
+    }
     final (account, err) = await _requireProject(token, externalId, fullName);
     if (err != null) return err;
     final repo = _ref.read(jenkinsRepositoryForAccountProvider(account!.id));
@@ -561,6 +570,118 @@ class McpJenkinsService {
       return _LocatedBuild(buildNumber: fromHistory, source: 'history-queueId');
     }
     return _LocatedBuild(cancelled: cancelled, why: why);
+  }
+
+  /// 终止一次发版：已开始的构建走 `/stop`，仍在排队的取消队列项。
+  Future<McpCallOutcome> _stopBuild(
+    McpToken token,
+    Map<String, dynamic> args,
+  ) async {
+    final triggerId = _str(args['triggerId']);
+    final record = _triggers.byId(triggerId);
+    if (triggerId.isNotEmpty && record == null) {
+      return const McpCallOutcome.error(
+        'triggerId 无效或已过期（服务重启 / 记录被淘汰）。'
+        '请改用 buildNumber 或 queueId 终止。',
+      );
+    }
+    final externalId = record?.accountId ?? _str(args['accountId']);
+    final fullName = record?.projectFullName ?? _str(args['projectFullName']);
+    if (externalId.isEmpty && fullName.isEmpty) {
+      return const McpCallOutcome.error(
+        '无法定位要终止的发版：请传 triggerId，'
+        '或同时传 accountId 与 projectFullName（可再配 buildNumber / queueId）。',
+      );
+    }
+    final (account, err) = await _requireProject(token, externalId, fullName);
+    if (err != null) return err;
+    final repo = _ref.read(jenkinsRepositoryForAccountProvider(account!.id));
+    if (repo == null) return _accountUnavailable();
+
+    var buildNumber =
+        (args['buildNumber'] as num?)?.toInt() ?? record?.buildNumber;
+    final queueId = (args['queueId'] as num?)?.toInt() ?? record?.queueId;
+
+    // 构建号未知但知道队列项：先看它出队了没有——出了队就按构建号终止，
+    // 还在排队就取消排队项（那时 /stop 无从下手）。
+    if (buildNumber == null && queueId != null) {
+      final resolved = await _resolveQueuedBuildNumber(
+        repo,
+        fullName,
+        queueId,
+        historyFloor: record?.historyFloor ?? 0,
+      );
+      buildNumber = resolved.buildNumber;
+      if (buildNumber == null) {
+        if (resolved.cancelled) {
+          return McpCallOutcome.ok({
+            'accountId': externalId,
+            'projectFullName': fullName,
+            'triggerId': ?record?.triggerId,
+            'queueId': queueId,
+            'action': 'noop',
+            'message': '该次发版此前已在队列中被取消，无需再终止。',
+          });
+        }
+        final cancelled = await repo.cancelQueueItem(queueId);
+        record?.cancelled = cancelled;
+        return McpCallOutcome.ok({
+          'accountId': externalId,
+          'projectFullName': fullName,
+          'triggerId': ?record?.triggerId,
+          'queueId': queueId,
+          'action': cancelled ? 'cancelledInQueue' : 'noop',
+          'message': cancelled
+              ? '该次发版还在队列中，已取消排队，构建不会开始。'
+              : '队列项已不存在（可能刚刚出队）。请稍后用 triggerId 查到发版号后再终止。',
+        });
+      }
+    }
+
+    // 完全没有定位信息时，只有显式 latest=true 才允许作用于「最近一次构建」。
+    if (buildNumber == null) {
+      if ((args['latest'] as bool?) != true) {
+        return const McpCallOutcome.error(
+          '未指定要终止哪次发版。请传 triggerId / buildNumber / queueId；'
+          '确实要终止该项目最近一次构建，请显式传 latest=true。',
+        );
+      }
+      final latest = await repo.fetchHistory(fullName, count: 1);
+      if (latest.isEmpty) {
+        return McpCallOutcome.ok({
+          'accountId': externalId,
+          'projectFullName': fullName,
+          'action': 'noop',
+          'message': '该项目暂无构建记录，无需终止。',
+        });
+      }
+      buildNumber = latest.first.number;
+    }
+
+    // 已经结束的构建不必打 /stop，直接告诉调用方当前结果。
+    final build = await repo.fetchBuild(fullName, buildNumber);
+    if (!build.building) {
+      return McpCallOutcome.ok({
+        'accountId': externalId,
+        'projectFullName': fullName,
+        'triggerId': ?record?.triggerId,
+        'buildNumber': buildNumber,
+        'action': 'noop',
+        'build': _buildJson(build),
+        'message': '构建 #$buildNumber 已结束（${build.resultEnum.name}），无需终止。',
+      });
+    }
+
+    await repo.stopBuild(fullName, buildNumber);
+    return McpCallOutcome.ok({
+      'accountId': externalId,
+      'projectFullName': fullName,
+      'triggerId': ?record?.triggerId,
+      'buildNumber': buildNumber,
+      'action': 'stopped',
+      'message': '已请求终止构建 #$buildNumber；'
+          'Jenkins 走完 aborted 流程需要几秒，可用 get_build_status 复查最终状态。',
+    });
   }
 
   Future<McpCallOutcome> _getReleaseHistory(

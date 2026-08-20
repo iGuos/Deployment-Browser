@@ -601,6 +601,44 @@ class JenkinsApi {
     );
   }
 
+  /// 取消**还在队列里**的一次触发（尚未分配构建号，`/stop` 无从下手）。
+  ///
+  /// Jenkins 的队列取消是 `POST /queue/cancelItem?id={queueId}`，与终止运行中
+  /// 构建的 `/{number}/stop` 是两套接口。队列项已出队 / 不存在时 Jenkins 返回
+  /// 404，这里返回 false 交由上层判断（通常意味着该改用 [stopBuild]）。
+  Future<bool> cancelQueueItem(int queueId) async {
+    final crumb = await _fetchCrumb();
+    try {
+      final res = await _dio.post<dynamic>(
+        '/queue/cancelItem',
+        queryParameters: {'id': '$queueId'},
+        options: Options(
+          followRedirects: false,
+          validateStatus: (s) => s != null && s < 500,
+          responseType: ResponseType.plain,
+          contentType: Headers.formUrlEncodedContentType,
+          headers: <String, dynamic>{
+            if (crumb != null) crumb.field: crumb.value,
+            'Referer': _baseReferer(),
+          },
+        ),
+      );
+      final code = res.statusCode ?? 0;
+      return code == 200 ||
+          code == 201 ||
+          code == 204 ||
+          code == 302 ||
+          code == 303;
+    } on DioException catch (e) {
+      throw toJenkinsException(e);
+    }
+  }
+
+  String _baseReferer() {
+    final base = _dio.options.baseUrl;
+    return base.endsWith('/') ? base : '$base/';
+  }
+
   Future<TriggerResult> _triggerBuildWithRetries(
     String jobFullName,
     Map<String, String> parameters, {

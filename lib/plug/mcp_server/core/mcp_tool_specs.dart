@@ -24,6 +24,7 @@ const String kToolGetProjectParameters = 'get_project_parameters';
 const String kToolTriggerBuild = 'trigger_build';
 const String kToolGetBuildStatus = 'get_build_status';
 const String kToolGetReleaseHistory = 'get_release_history';
+const String kToolStopBuild = 'stop_build';
 
 /// `trigger_build` 默认最多等多少秒，直到 Jenkins 给本次触发分配构建号。
 /// 常见 Jenkins quiet period 为 5 秒，再留出排队 / 拉起执行器的余量。
@@ -49,7 +50,7 @@ const _projectProp = {
   'description': '项目的 Jenkins fullName（来自 list_projects 返回的 fullName），如 backend/order-service',
 };
 
-/// 对外暴露的 6 个工具。
+/// 对外暴露的 7 个工具。
 final List<McpToolSpec> kMcpToolSpecs = [
   McpToolSpec(
     name: kToolListAccounts,
@@ -97,9 +98,11 @@ final List<McpToolSpec> kMcpToolSpecs = [
   ),
   McpToolSpec(
     name: kToolGetBuildStatus,
-    description: '根据账号 ID 与项目 fullName 查询发版进度（构建状态、流水线阶段）及控制台日志。'
+    description: '查询发版进度（构建状态、流水线阶段）及控制台日志。'
         '定位方式优先级：buildNumber > triggerId（trigger_build 返回的唯一键，会自动换回发版号）'
         '> queueId > 最近一次构建。'
+        '只传 triggerId 即可——账号与项目会从该次触发的记录里取，accountId 与 '
+        'projectFullName 可省略；不传 triggerId 时这两个必填。'
         '程序化轮询请传 triggerId（或已知的 buildNumber），否则同一项目多次发版时可能读到别人的构建。',
     inputSchema: _obj(
       {
@@ -107,11 +110,12 @@ final List<McpToolSpec> kMcpToolSpecs = [
         'projectFullName': _projectProp,
         'buildNumber': {
           'type': 'integer',
-          'description': '构建号（发版号）；与 queueId 都省略时使用最近一次构建。',
+          'description': '构建号（发版号）；与 triggerId / queueId 都省略时使用最近一次构建。',
         },
         'triggerId': {
           'type': 'string',
           'description': 'trigger_build 返回的 triggerId；用于把「某一次触发」精确换回其发版号。'
+              '传了它就可以省略 accountId 与 projectFullName。'
               '若该次发版仍在排队，返回 found=false 且 queued=true。',
         },
         'queueId': {
@@ -128,7 +132,41 @@ final List<McpToolSpec> kMcpToolSpecs = [
           'description': '是否返回控制台日志，默认 true。',
         },
       },
-      required: ['accountId', 'projectFullName'],
+      // 不设 required：传 triggerId 时账号与项目从台账里取。
+    ),
+  ),
+  McpToolSpec(
+    name: kToolStopBuild,
+    description: '终止一次发版：已开始的构建走 Jenkins 的 stop（必要时升级 term），'
+        '仍在队列里、还没分配发版号的则取消排队项。'
+        '定位方式优先级：buildNumber > triggerId > queueId > 最近一次构建（需显式 latest=true）。'
+        '只传 triggerId 即可——账号与项目会从该次触发的记录里取。'
+        '返回 action 说明实际做了什么：stopped（终止了运行中的构建）/ '
+        'cancelledInQueue（取消了排队项）/ noop（已经结束，无需终止）。',
+    inputSchema: _obj(
+      {
+        'accountId': _accountIdProp,
+        'projectFullName': _projectProp,
+        'triggerId': {
+          'type': 'string',
+          'description': 'trigger_build 返回的 triggerId；终止该次发版。'
+              '传了它就可以省略 accountId 与 projectFullName。',
+        },
+        'buildNumber': {
+          'type': 'integer',
+          'description': '要终止的构建号（发版号）。',
+        },
+        'queueId': {
+          'type': 'integer',
+          'description': 'Jenkins 队列项 id；构建号还没分配时用它取消排队。',
+        },
+        'latest': {
+          'type': 'boolean',
+          'description': '未给出任何定位参数时，是否终止该项目最近一次构建，默认 false。'
+              '终止是破坏性操作，必须显式要求才会作用于「最近一次」。',
+        },
+      },
+      // 不设 required：传 triggerId 时账号与项目从台账里取。
     ),
   ),
   McpToolSpec(

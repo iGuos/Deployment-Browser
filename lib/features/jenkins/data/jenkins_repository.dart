@@ -113,6 +113,15 @@ class JenkinsRepository {
     }
   }
 
+  /// 取消还在队列里、尚未分配构建号的那次触发。
+  Future<bool> cancelQueueItem(int queueId) async {
+    try {
+      return await _api.cancelQueueItem(queueId);
+    } catch (e) {
+      throw toJenkinsException(e);
+    }
+  }
+
   /// 拉「该 Job × 该参数」可能的分支/Tag 候选集合（带类型），命中缓存就直接返回。
   ///
   /// 优先调用 Git Parameter Plugin 的 `fillValueItems` 接口（返回远端全量 ref + 类型信息）；

@@ -301,10 +301,12 @@ class McpJenkinsService {
               return _LocatedBuild(cancelled: true, waitedMs: elapsedMs());
             }
             final number = item.executable?.number;
-            if (number != null && number > 0) {
-              // 队列项是 Jenkins 给的权威答案：直接采信，并登记占用
-              // （认领失败说明 Jenkins 把两次同参数触发合并成了一条 build，
-              // 那时本就该指向同一个号，不影响结论）。
+            // 队列项是 Jenkins 给的权威答案，但仍要过一道事实下界：号必须大于
+            // 触发前的最新号，否则说明这个队列项 stale、executable 指着上一条
+            // build（与发版 UI 同一道校验）。不达标就继续等，不返回错号。
+            if (number != null && number > record.historyFloor) {
+              // 认领失败说明 Jenkins 把两次同参数触发合并成了一条 build，
+              // 那时本就该指向同一个号，不影响结论。
               _claimBuild(record, number);
               return _LocatedBuild(
                 buildNumber: number,
@@ -451,7 +453,12 @@ class McpJenkinsService {
       if (queueId != null) record.queueIdSource = 'queue-scan';
     }
     if (buildNumber == null && queueId != null) {
-      final resolved = await _resolveQueuedBuildNumber(repo, fullName, queueId);
+      final resolved = await _resolveQueuedBuildNumber(
+        repo,
+        fullName,
+        queueId,
+        historyFloor: record?.historyFloor ?? 0,
+      );
       buildNumber = resolved.buildNumber;
       cancelled = cancelled || resolved.cancelled;
       queueWhy = resolved.why;
@@ -523,11 +530,16 @@ class McpJenkinsService {
   }
 
   /// 由 queueId 换回构建号：先查队列项，队列项已过期再到构建历史里反查。
+  ///
+  /// [historyFloor] 是触发前该 Job 的最新构建号（只有经本服务触发、能查到台账
+  /// 时才有）。给了就用它挡掉 stale 队列项指向的旧 build；调用方只给 queueId
+  /// 时无从校验，传 0 即可。
   Future<_LocatedBuild> _resolveQueuedBuildNumber(
     JenkinsRepository repo,
     String fullName,
-    int queueId,
-  ) async {
+    int queueId, {
+    int historyFloor = 0,
+  }) async {
     String? why;
     var cancelled = false;
     try {
@@ -536,7 +548,7 @@ class McpJenkinsService {
         cancelled = item.cancelled;
         why = item.why;
         final number = item.executable?.number;
-        if (number != null && number > 0) {
+        if (number != null && number > historyFloor) {
           return _LocatedBuild(buildNumber: number, source: 'queue');
         }
       }

@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/locale/app_locale_controller.dart';
 import '../../../core/notifications/build_notifier.dart';
 import '../../../core/notifications/notifications_settings.dart';
+import '../../jenkins/application/build_attribution_provider.dart';
 import '../../jenkins/data/jenkins_repository.dart';
+import '../../jenkins/domain/build_attribution.dart';
 import '../../jenkins/domain/jenkins_build.dart';
 import '../../notifications/slack/slack_notifier.dart';
 
@@ -106,36 +108,6 @@ class ProjectRunTabsController extends Notifier<ProjectRunTabsState> {
   }
 }
 
-/// 进程内的"build 号占位"注册表。
-///
-/// 解决多 tab 并发触发时的竞态：用户在 1~2 秒内连续点两次「立即构建」，
-/// Jenkins 那一头几乎同时建立两个队列项（如 #35、#36），但两次 trigger 内部
-/// 拉 history 时常常只看到旧的 #34（新建的还没刷出来），导致两个 controller
-/// 都把"必须严格大于 #34 的最早一条"匹配到 #35，从而**同时附着到同一条 build**。
-///
-/// [reserve] 在同步代码段内自增"已被占用的最大 build 号"并返回新值，让每次
-/// trigger 都拿到独一无二的下界，互不冲突。
-class ReservedBuildNumberRegistry {
-  final Map<String, int> _reserved = {};
-
-  /// 在 [floor]（通常来自 fetchHistory 的最新 build 号）之上原子地占用一个号，
-  /// 返回的整数即为本次 trigger 的"必须严格 ≥"下界。
-  int reserve(String jobFullName, int floor) {
-    final current = _reserved[jobFullName] ?? 0;
-    final ceiling = math.max(current, floor);
-    final next = ceiling + 1;
-    _reserved[jobFullName] = next;
-    return next;
-  }
-
-  /// 仅用于单测重置，避免相互污染。
-  @visibleForTesting
-  void clear() => _reserved.clear();
-}
-
-final reservedBuildNumberRegistryProvider =
-    Provider<ReservedBuildNumberRegistry>((_) => ReservedBuildNumberRegistry());
-
 /// 单个项目当前活跃的发版任务状态。
 @immutable
 class ReleaseRunState {
@@ -146,6 +118,7 @@ class ReleaseRunState {
     this.queueWhy,
     this.queueWaitedSeconds = 0,
     this.queueTriggeredAt,
+    this.queueHistoryFloor,
     this.buildNumber,
     this.build,
     this.stages = const [],
@@ -169,6 +142,12 @@ class ReleaseRunState {
   /// 触发本次构建的客户端本地时间（毫秒），用于在 queue 项失效后通过
   /// 构建历史 + timestamp 反向找回真实 build number。
   final int? queueTriggeredAt;
+
+  /// 触发前 Jenkins 上该 Job 的最大构建号。
+  ///
+  /// 本次触发的构建号必然大于它（那条 build 触发时还不存在），所以这是一个
+  /// **事实下界**——不像早先的递增号段那样会因触发失败留空洞、被外部构建挤偏。
+  final int? queueHistoryFloor;
 
   final int? buildNumber;
   final JenkinsBuild? build;
@@ -247,6 +226,7 @@ class ReleaseRunState {
     String? queueWhy,
     int? queueWaitedSeconds,
     int? queueTriggeredAt,
+    int? queueHistoryFloor,
     int? buildNumber,
     JenkinsBuild? build,
     List<BuildStage>? stages,
@@ -272,6 +252,9 @@ class ReleaseRunState {
       queueTriggeredAt: clearQueue
           ? null
           : (queueTriggeredAt ?? this.queueTriggeredAt),
+      queueHistoryFloor: clearQueue
+          ? null
+          : (queueHistoryFloor ?? this.queueHistoryFloor),
       buildNumber: clearBuild ? null : (buildNumber ?? this.buildNumber),
       build: clearBuild ? null : (build ?? this.build),
       stages: clearBuild ? const [] : (stages ?? this.stages),
@@ -311,7 +294,11 @@ class ReleaseController extends Notifier<ReleaseRunState> {
 
   @override
   ReleaseRunState build() {
-    ref.onDispose(_cancelTimers);
+    ref.onDispose(() {
+      _cancelTimers();
+      // tab 关闭 / run 被丢弃：交回构建号，别让台账里留下永久占用。
+      _attribution.release(_registryKey, handle.runId);
+    });
     return ReleaseRunState(jobFullName: jobFullName);
   }
 
@@ -370,11 +357,9 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       clearVariantLabel: variantLabel == null,
     );
     final triggeredAt = DateTime.now().millisecondsSinceEpoch;
-    // 触发前先拉一次 history 记录当前最大 build 号；再叠加进程内的"已占用门槛"，
-    // 取较大者 + 1 作为本次 run 的"必须 ≥ 此值"下界。这样：
-    // - 单次触发：等到下一个新 build（>= floor + 1）；
-    // - 短时连续触发：第二次的 floor 会被注册表推到第一次的 reserved 之上，
-    //   再 + 1 得到独属于自己的下界，两个 tab 不会抢同一条 build。
+    // 触发前拉一次 history 记录当前最大 build 号：本次触发的构建号必然大于它
+    // （那条 build 此刻还不存在）。这是**事实下界**，不会像递增号段那样在触发
+    // 失败时留空洞、或被外部构建插队挤偏。
     var historyFloor = state.buildNumber ?? 0;
     try {
       final history = await repo.fetchHistory(state.jobFullName, count: 1);
@@ -382,11 +367,11 @@ class ReleaseController extends Notifier<ReleaseRunState> {
         historyFloor = math.max(historyFloor, history.first.number);
       }
     } catch (_) {
-      // 拉不到不致命，下面 reserve 仍能给出递增门槛
+      // 拉不到不致命：下界退化为 0，靠参数比对 + 认领仍能区分
     }
-    final reservedMin = ref
-        .read(reservedBuildNumberRegistryProvider)
-        .reserve(_registryKey, historyFloor);
+    // 重新触发时先交回上一条构建的占用，让别的 run 可以认领它。
+    _attribution.release(_registryKey, handle.runId);
+    _triggerParameters = Map<String, String>.unmodifiable(parameters);
     try {
       final triggerResult = await repo.triggerBuild(
         state.jobFullName,
@@ -396,7 +381,7 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       // 部分 Jenkins / 反代触发后 `Location` 不是 `/queue/item/{N}/` 而是 Job 主页 URL；
       // 此时按这个 URL 去 GET 永远拿不到 executable.number。
       // 我们用包含 `/queue/item/` 来识别合法 queue URL；不合法时只记录 triggeredAt，
-      // 完全靠 build history + 时间戳兜底。
+      // 完全靠 build history + 参数快照兜底。
       final isProperQueueUrl = triggerResult.isQueueItemLocation;
       state = state.copyWith(
         triggering: false,
@@ -407,8 +392,9 @@ class ReleaseController extends Notifier<ReleaseRunState> {
         queueWhy: null,
         queueWaitedSeconds: 0,
         queueTriggeredAt: triggeredAt,
+        queueHistoryFloor: historyFloor,
       );
-      _startQueuePolling(reservedMin: reservedMin);
+      _startQueuePolling();
     } catch (e) {
       state = state.copyWith(triggering: false, errorMessage: e.toString());
     }
@@ -417,6 +403,9 @@ class ReleaseController extends Notifier<ReleaseRunState> {
   /// 用户从历史选择某次构建查看
   Future<void> attachBuild(int number) async {
     _cancelTimers();
+    // 手动切到某条构建：把占用也迁过去（本 run 先前持有的号随之释放），
+    // 免得别的 run 认领到用户正在看的这条。
+    _claimBuild(number);
     state = state.copyWith(
       buildNumber: number,
       stages: const [],
@@ -468,11 +457,19 @@ class ReleaseController extends Notifier<ReleaseRunState> {
 
   /// 本次 trigger 在 [ReservedBuildNumberRegistry] 中"占用"的 build 号下界。
   /// `_locateNewBuildOnce` 严格要求 `b.number >= _reservedMin`，避免多 tab 抢号。
-  int? _reservedMin;
+  /// 本次触发实际发给 Jenkins 的参数，用于在构建历史里按参数快照认亲。
+  Map<String, String> _triggerParameters = const {};
 
-  void _startQueuePolling({required int reservedMin}) {
+  /// 全进程共享的构建归属台账（与 MCP 通道共用，避免互相认错）。
+  BuildAttributionRegistry get _attribution =>
+      ref.read(buildAttributionRegistryProvider);
+
+  /// 认领某个构建号：成功说明它属于本 run，失败说明已被别的 run / MCP 触发占用。
+  bool _claimBuild(int number) =>
+      _attribution.claim(_registryKey, number, handle.runId);
+
+  void _startQueuePolling() {
     _queuePollTimer?.cancel();
-    _reservedMin = reservedMin;
     _locateNewBuildOnce();
     _queuePollTimer = Timer.periodic(
       const Duration(seconds: 2),
@@ -500,7 +497,7 @@ class ReleaseController extends Notifier<ReleaseRunState> {
 
     state = state.copyWith(queueWaitedSeconds: state.queueWaitedSeconds + 2);
 
-    final reservedMin = _reservedMin;
+    final historyFloor = state.queueHistoryFloor ?? 0;
 
     final queueUrl = state.queueUrl;
     if (queueUrl != null) {
@@ -514,10 +511,12 @@ class ReleaseController extends Notifier<ReleaseRunState> {
             return;
           }
           final number = item.executable?.number;
-          // 即便 queue 给了 number，也要保证它不小于 reserved 下界
-          // （罕见场景：队列项 stale，executable 指向了上一条 build）。
-          if (number != null &&
-              (reservedMin == null || number >= reservedMin)) {
+          // 队列项是 Jenkins 自己给的权威答案（这个队列项就是本次触发建立的），
+          // 只做一次 stale 校验——号必须大于触发前的最新号——之后无条件采信。
+          // 注意：这里**不能**因为号已被别的 run 认领就否决它；Jenkins 会把同
+          // Job 同参数的排队项合并成一条 build，那时两个 run 本就该指向同一个号。
+          if (number != null && number > 0 && number > historyFloor) {
+            _claimBuild(number);
             _attachToNewBuild(number);
             return;
           }
@@ -531,22 +530,23 @@ class ReleaseController extends Notifier<ReleaseRunState> {
       }
     }
 
-    // 通过 builds history + triggeredAt 反查新构建
+    // 没有队列项可依据时，用构建历史 + 参数快照认亲（判定与 MCP 通道共用）。
     try {
-      final builds = await repo.fetchHistory(jobFullName, count: 10);
-      const toleranceMs = 30 * 1000;
-      final picked =
-          builds
-              .where((b) => b.timestamp >= triggeredAt - toleranceMs)
-              .where((b) => reservedMin == null || b.number >= reservedMin)
-              .toList()
-            ..sort((a, b) => a.number.compareTo(b.number));
-      if (picked.isEmpty) return;
-      _attachToNewBuild(picked.first.number, prefetched: picked.first);
+      final rows = await repo.fetchReleaseHistory(jobFullName, count: 10);
+      final picked = pickOwnBuild(
+        rows: rows,
+        triggeredAt: triggeredAt,
+        historyFloor: historyFloor,
+        triggeredParameters: _triggerParameters,
+        tryClaim: _claimBuild,
+      );
+      if (picked == null) return;
+      _attachToNewBuild(picked.build.number, prefetched: picked.build);
     } catch (_) {
       // 单次失败忽略，下次再试
     }
   }
+
 
   /// 切换到新的 build：停队列轮询、清掉旧 build 状态、起构建轮询。
   void _attachToNewBuild(int number, {JenkinsBuild? prefetched}) {

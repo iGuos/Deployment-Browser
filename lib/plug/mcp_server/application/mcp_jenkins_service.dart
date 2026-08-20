@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../features/jenkins/application/build_attribution_provider.dart';
 import '../../../features/jenkins/data/jenkins_repository.dart';
+import '../../../features/jenkins/domain/build_attribution.dart';
 import '../../../features/jenkins/domain/build_parameter.dart';
 import '../../../features/jenkins/domain/jenkins_build.dart';
 import '../../../features/jenkins/domain/jenkins_node.dart';
@@ -146,13 +148,26 @@ class McpJenkinsService {
     final detail = await repo.fetchJobDetail(fullName);
     final merged = BuildParameter.mergeForTrigger(detail.parameters, overrides);
 
+    // 触发前拉一次最新构建号作为事实下界：本次构建号必然大于它。
+    var historyFloor = 0;
+    try {
+      final latest = await repo.fetchHistory(fullName, count: 1);
+      if (latest.isNotEmpty) historyFloor = latest.first.number;
+    } catch (_) {
+      // 拉不到不致命：下界退化为 0，仍有参数比对 + 认领兜底
+    }
+
     // 先开台账再触发：triggerId 与 Jenkins 无关，永远唯一且不为 null，
     // 是调用方区分「同一项目第 N 次发版」的键；queueId / 构建号随后回填。
     final record = _triggers.open(
       accountId: externalId,
+      // 与发版 UI 同一口径的归属键（内部账号 id + 项目全名），
+      // 两条通道共用一份台账才不会互相认错构建。
+      attributionKey: '${account.id}::$fullName',
       projectFullName: fullName,
       triggeredAt: DateTime.now().millisecondsSinceEpoch,
       parameters: merged,
+      historyFloor: historyFloor,
     );
     final trigger = await repo.triggerBuild(fullName, parameters: merged);
     record.queueId = _queueIdFromUrl(trigger.location);
@@ -285,6 +300,10 @@ class McpJenkinsService {
             }
             final number = item.executable?.number;
             if (number != null && number > 0) {
+              // 队列项是 Jenkins 给的权威答案：直接采信，并登记占用
+              // （认领失败说明 Jenkins 把两次同参数触发合并成了一条 build，
+              // 那时本就该指向同一个号，不影响结论）。
+              _claimBuild(record, number);
               return _LocatedBuild(
                 buildNumber: number,
                 source: 'queue',
@@ -306,6 +325,7 @@ class McpJenkinsService {
               queueId,
             );
             if (number != null) {
+              _claimBuild(record, number);
               return _LocatedBuild(
                 buildNumber: number,
                 source: 'history-queueId',
@@ -362,30 +382,33 @@ class McpJenkinsService {
     }
   }
 
-  /// 无 queueId 时的兜底：在构建历史里挑一条属于本次触发的构建。
+  /// 登记「这条构建属于本次触发」；已被别人占用时返回 false。
+  bool _claimBuild(McpTriggerRecord record, int buildNumber) => _ref
+      .read(buildAttributionRegistryProvider)
+      .claim(record.attributionKey, buildNumber, record.triggerId);
+
+  /// 无 queueId 时的兜底：在构建历史里按参数快照认亲。
   ///
-  /// 只取触发时刻之后出现、且 queueId / 构建号都未被其它触发认领过的那条，
-  /// 因此同一项目在容差窗口内连续触发两次也不会都指向同一个构建号。
+  /// 判定逻辑与发版 UI 共用 [pickOwnBuild]：事实下界 + 参数快照 + 原子认领，
+  /// 因此既不会把同事在 Jenkins 上手动触发的构建认成自己的，也不会和 UI tab
+  /// 抢同一条构建。认不到就返回 null，让调用方用 triggerId 稍后再查。
   Future<JenkinsBuild?> _claimBuildFromHistory(
     JenkinsRepository repo,
     McpTriggerRecord record,
   ) async {
     try {
-      final builds = await repo.fetchHistory(record.projectFullName, count: 10);
-      return pickTriggeredBuild(
-        history: builds,
-        triggeredAt: record.triggeredAt,
-        queueIdClaimed: (id) => _triggers.isQueueIdClaimed(
-          record.projectFullName,
-          id,
-          exceptTriggerId: record.triggerId,
-        ),
-        buildNumberClaimed: (number) => _triggers.isBuildNumberClaimed(
-          record.projectFullName,
-          number,
-          exceptTriggerId: record.triggerId,
-        ),
+      final rows = await repo.fetchReleaseHistory(
+        record.projectFullName,
+        count: 10,
       );
+      final picked = pickOwnBuild(
+        rows: rows,
+        triggeredAt: record.triggeredAt,
+        historyFloor: record.historyFloor,
+        triggeredParameters: record.parameters,
+        tryClaim: (number) => _claimBuild(record, number),
+      );
+      return picked?.build;
     } catch (_) {
       return null;
     }

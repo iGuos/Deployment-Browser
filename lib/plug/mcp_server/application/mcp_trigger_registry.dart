@@ -11,9 +11,11 @@ class McpTriggerRecord {
   McpTriggerRecord({
     required this.triggerId,
     required this.accountId,
+    required this.attributionKey,
     required this.projectFullName,
     required this.triggeredAt,
     required this.parameters,
+    required this.historyFloor,
   });
 
   /// 本次触发的唯一键，永不为 null，跨并发触发也互不相同。
@@ -21,9 +23,16 @@ class McpTriggerRecord {
 
   /// 对外账号 id（已哈希，不含任何明文）。
   final String accountId;
+
+  /// 共享构建归属台账（[BuildAttributionRegistry]）的键，与发版 UI 同一口径。
+  final String attributionKey;
+
   final String projectFullName;
   final int triggeredAt;
   final Map<String, String> parameters;
+
+  /// 触发前 Jenkins 上该 Job 的最大构建号；本次构建号必然大于它。
+  final int historyFloor;
 
   /// Jenkins 队列项 id；解析不到 `Location` 时可能稍后才认领到。
   int? queueId;
@@ -51,16 +60,20 @@ class McpTriggerRegistry {
 
   McpTriggerRecord open({
     required String accountId,
+    required String attributionKey,
     required String projectFullName,
     required int triggeredAt,
     required Map<String, String> parameters,
+    int historyFloor = 0,
   }) {
     final record = McpTriggerRecord(
       triggerId: 'trg_${triggeredAt}_${++_seq}',
       accountId: accountId,
+      attributionKey: attributionKey,
       projectFullName: projectFullName,
       triggeredAt: triggeredAt,
       parameters: Map<String, String>.unmodifiable(parameters),
+      historyFloor: historyFloor,
     );
     _records[record.triggerId] = record;
     while (_records.length > capacity) {
@@ -82,17 +95,6 @@ class McpTriggerRegistry {
           r.triggerId != exceptTriggerId &&
           r.projectFullName == projectFullName &&
           r.queueId == queueId);
-
-  /// 该构建号是否已被本项目**其它**触发认领。
-  bool isBuildNumberClaimed(
-    String projectFullName,
-    int buildNumber, {
-    String? exceptTriggerId,
-  }) =>
-      _records.values.any((r) =>
-          r.triggerId != exceptTriggerId &&
-          r.projectFullName == projectFullName &&
-          r.buildNumber == buildNumber);
 }
 
 /// 从队列里挑一个属于本次触发的排队项：按 id 升序取第一个未取消、未被别人认领的。
@@ -108,29 +110,4 @@ int? pickUnclaimedQueueItemId(
     if (!claimed(item.id)) return item.id;
   }
   return null;
-}
-
-/// 连 queueId 都拿不到时的兜底：在构建历史里挑一条属于本次触发的构建。
-///
-/// 只看触发时刻之后（留 [toleranceMs] 容忍设备与 Jenkins 的时钟偏差）出现、
-/// 且 queueId 与构建号都没被别的触发认领过的构建，取其中最小的构建号。
-/// 「排除已认领」是关键：仅按时间窗取最小号时，同一项目在容差内触发两次会把
-/// 两次都指到同一个构建号。
-JenkinsBuild? pickTriggeredBuild({
-  required List<JenkinsBuild> history,
-  required int triggeredAt,
-  bool Function(int queueId)? queueIdClaimed,
-  bool Function(int buildNumber)? buildNumberClaimed,
-  int toleranceMs = 30 * 1000,
-}) {
-  final candidates = history.where((b) {
-    if (b.number <= 0) return false;
-    if (b.timestamp < triggeredAt - toleranceMs) return false;
-    final q = b.queueId;
-    if (q != null && (queueIdClaimed?.call(q) ?? false)) return false;
-    if (buildNumberClaimed?.call(b.number) ?? false) return false;
-    return true;
-  }).toList()
-    ..sort((a, b) => a.number.compareTo(b.number));
-  return candidates.isEmpty ? null : candidates.first;
 }

@@ -14,6 +14,7 @@ import '../core/mcp_protocol.dart';
 import '../core/mcp_token.dart';
 import '../core/mcp_tool_specs.dart';
 import 'mcp_server_state_provider.dart';
+import 'mcp_trigger_registry.dart';
 
 /// 把 MCP 工具调用翻译为对既有 Jenkins 仓储 / Provider 的读取，
 /// 并按调用令牌的作用域（允许的账号 / 项目）做访问控制。
@@ -21,6 +22,10 @@ class McpJenkinsService {
   McpJenkinsService(this._ref);
 
   final Ref _ref;
+
+  /// 每次 trigger_build 的台账：发 triggerId，并记录哪个 queueId / 构建号
+  /// 已经属于哪一次触发（同一项目连续多次发版靠它避免串号）。
+  final McpTriggerRegistry _triggers = McpTriggerRegistry();
 
   Future<McpCallOutcome> dispatch({
     required String tokenId,
@@ -139,77 +144,91 @@ class McpJenkinsService {
     final detail = await repo.fetchJobDetail(fullName);
     final merged = BuildParameter.mergeForTrigger(detail.parameters, overrides);
 
-    final triggeredAt = DateTime.now().millisecondsSinceEpoch;
+    // 先开台账再触发：triggerId 与 Jenkins 无关，永远唯一且不为 null，
+    // 是调用方区分「同一项目第 N 次发版」的键；queueId / 构建号随后回填。
+    final record = _triggers.open(
+      accountId: externalId,
+      projectFullName: fullName,
+      triggeredAt: DateTime.now().millisecondsSinceEpoch,
+      parameters: merged,
+    );
     final queueUrl = await repo.triggerBuild(fullName, parameters: merged);
-    final queueId = _queueIdFromUrl(queueUrl);
+    record.queueId = _queueIdFromUrl(queueUrl);
+    if (record.queueId != null) record.queueIdSource = 'location';
 
     // 程序化调用必须拿到本次发版对应的构建号，否则同一项目连续多次发版无法关联。
-    // 因此这里在 waitSeconds 内轮询队列项 / 构建历史，直到 Jenkins 分配构建号。
-    // 注意：queueUrl 含 Jenkins 地址，绝不回传给调用方，只返回 queueId / buildNumber。
+    // 因此这里在 waitSeconds 内轮询队列 / 构建历史，直到 Jenkins 分配构建号。
+    // 注意：queueUrl 含 Jenkins 地址，绝不回传给调用方，只返回 triggerId / queueId /
+    // buildNumber。
     final located = await _locateTriggeredBuild(
       repo: repo,
-      fullName: fullName,
-      queueUrl: queueUrl,
-      queueId: queueId,
-      triggeredAt: triggeredAt,
+      record: record,
       waitSeconds: waitSeconds,
     );
+    record.buildNumber = located.buildNumber;
+    record.cancelled = located.cancelled;
 
     return McpCallOutcome.ok({
       'accountId': externalId,
       'projectFullName': fullName,
-      // queueId 是「这一次触发」的唯一关联键：构建号还没分配时它也已确定，
-      // 且可随时传给 get_build_status 换回构建号。
-      'queueId': queueId,
+      // triggerId：本次触发的唯一键，触发即确定、永不为 null，
+      // 随时可传给 get_build_status 换回发版号。
+      'triggerId': record.triggerId,
+      // queueId：Jenkins 侧队列项 id，能拿到时可跨进程复查；
+      // 部分实例 / 反向代理不返回 /queue/item/{id}/ 时为 null，此时以 triggerId 为准。
+      'queueId': record.queueId,
+      'queueIdSource': record.queueIdSource,
       'buildNumber': located.buildNumber,
       'buildNumberSource': located.source,
       'queued': located.buildNumber == null && !located.cancelled,
       'cancelled': located.cancelled,
       'queueWhy': located.why,
-      'triggeredAt': triggeredAt,
+      'triggeredAt': record.triggeredAt,
       'waitedMs': located.waitedMs,
       'parameters': merged,
-      'message': _triggerMessage(located, queueId),
+      'message': _triggerMessage(located, record),
     });
   }
 
-  String _triggerMessage(_LocatedBuild located, int? queueId) {
+  String _triggerMessage(_LocatedBuild located, McpTriggerRecord record) {
     if (located.cancelled) return '构建在队列中被取消，本次发版未开始。';
     final number = located.buildNumber;
-    if (number != null) return '已开始构建 #$number';
-    final handle = queueId != null
-        ? '可用 get_build_status（传 queueId=$queueId）查询并换回构建号'
-        : '可用 get_build_status 查询最近一次构建';
+    if (number != null) {
+      return '已开始构建 #$number（triggerId=${record.triggerId}）';
+    }
     final why = located.why;
     return '已加入队列但尚未分配构建号'
-        '${why == null || why.isEmpty ? '' : '（$why）'}，$handle';
+        '${why == null || why.isEmpty ? '' : '（$why）'}，'
+        '可用 get_build_status（传 triggerId=${record.triggerId}）查询并换回构建号';
   }
 
-  /// 在 [waitSeconds] 内定位本次触发对应的构建号。
+  /// 在 [waitSeconds] 内定位本次触发对应的构建号，并把认领到的 queueId 回填进
+  /// [record]。
   ///
-  /// 优先级：队列项 `executable` → 按 queueId 反查构建历史 →（拿不到合法
-  /// queue URL 时）按触发时间戳兜底。任一步命中即返回。
+  /// 优先级：队列项 `executable` → 按 queueId 反查构建历史 → 按触发时间戳兜底
+  /// （兜底会跳过已被其它触发认领的构建，避免同一项目连续触发串号）。
   Future<_LocatedBuild> _locateTriggeredBuild({
     required JenkinsRepository repo,
-    required String fullName,
-    required String queueUrl,
-    required int? queueId,
-    required int triggeredAt,
+    required McpTriggerRecord record,
     required int waitSeconds,
   }) async {
     final started = DateTime.now();
     int elapsedMs() => DateTime.now().difference(started).inMilliseconds;
-    // 部分 Jenkins / 反向代理触发后返回的 Location 不是 /queue/item/{N}/，
-    // 那时既没有 queueId 也无法查队列项，只能按时间戳兜底。
-    final hasQueueUrl = queueUrl.contains('/queue/item/');
     String? why;
 
     for (var round = 0;; round++) {
-      // 队列项还在排队时它就是权威答案，本轮不必再扫历史，省一次请求。
+      // 触发响应没给出 /queue/item/{id}/ 时，到队列里认领一个属于本项目、
+      // 尚未被其它触发占用的排队项，把 queueId 补回来。
+      if (record.queueId == null) {
+        record.queueId = await _claimQueueId(repo, record);
+        if (record.queueId != null) record.queueIdSource = 'queue-scan';
+      }
+
       var stillQueued = false;
-      if (hasQueueUrl) {
+      final queueId = record.queueId;
+      if (queueId != null) {
         try {
-          final item = await repo.fetchQueueItem(queueUrl);
+          final item = await repo.fetchQueueItemById(queueId);
           if (item != null) {
             if (item.cancelled) {
               return _LocatedBuild(cancelled: true, waitedMs: elapsedMs());
@@ -229,14 +248,11 @@ class McpJenkinsService {
         } catch (_) {
           // 忽略：下面继续走历史反查
         }
-      }
-
-      if (queueId != null) {
         // 队列项已失效 / 拉不到时（少数 Jenkins 很快清掉出队项），按 queueId 反查历史。
         if (!stillQueued) {
           try {
             final number = await repo.findBuildNumberByQueueId(
-              fullName,
+              record.projectFullName,
               queueId,
             );
             if (number != null) {
@@ -250,14 +266,16 @@ class McpJenkinsService {
           } catch (_) {}
         }
       } else {
-        final number = await _buildNumberByTimestamp(
-          repo,
-          fullName,
-          triggeredAt,
-        );
-        if (number != null) {
+        // 连排队项都认领不到（触发后立刻出队 / 队列接口不可读）：按时间戳兜底。
+        final picked = await _claimBuildFromHistory(repo, record);
+        if (picked != null) {
+          if (record.queueId == null && picked.queueId != null) {
+            record.queueId = picked.queueId;
+            record.queueIdSource = 'history';
+          }
+          record.buildNumber = picked.number;
           return _LocatedBuild(
-            buildNumber: number,
+            buildNumber: picked.number,
             source: 'history-timestamp',
             why: why,
             waitedMs: elapsedMs(),
@@ -274,19 +292,50 @@ class McpJenkinsService {
     }
   }
 
-  /// 无 queueId 时的兜底：取触发时刻之后最早出现的那条构建。
-  Future<int?> _buildNumberByTimestamp(
+  /// 从 Jenkins 队列里认领一个属于本次触发的排队项 id；认领不到返回 null。
+  Future<int?> _claimQueueId(
     JenkinsRepository repo,
-    String fullName,
-    int triggeredAt,
+    McpTriggerRecord record,
   ) async {
     try {
-      const toleranceMs = 30 * 1000;
-      final builds = await repo.fetchHistory(fullName, count: 10);
-      final picked =
-          builds.where((b) => b.timestamp >= triggeredAt - toleranceMs).toList()
-            ..sort((a, b) => a.number.compareTo(b.number));
-      return picked.isEmpty ? null : picked.first.number;
+      final items = await repo.fetchQueueItemsForJob(record.projectFullName);
+      return pickUnclaimedQueueItemId(
+        items,
+        (id) => _triggers.isQueueIdClaimed(
+          record.projectFullName,
+          id,
+          exceptTriggerId: record.triggerId,
+        ),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 无 queueId 时的兜底：在构建历史里挑一条属于本次触发的构建。
+  ///
+  /// 只取触发时刻之后出现、且 queueId / 构建号都未被其它触发认领过的那条，
+  /// 因此同一项目在容差窗口内连续触发两次也不会都指向同一个构建号。
+  Future<JenkinsBuild?> _claimBuildFromHistory(
+    JenkinsRepository repo,
+    McpTriggerRecord record,
+  ) async {
+    try {
+      final builds = await repo.fetchHistory(record.projectFullName, count: 10);
+      return pickTriggeredBuild(
+        history: builds,
+        triggeredAt: record.triggeredAt,
+        queueIdClaimed: (id) => _triggers.isQueueIdClaimed(
+          record.projectFullName,
+          id,
+          exceptTriggerId: record.triggerId,
+        ),
+        buildNumberClaimed: (number) => _triggers.isBuildNumberClaimed(
+          record.projectFullName,
+          number,
+          exceptTriggerId: record.triggerId,
+        ),
+      );
     } catch (_) {
       return null;
     }
@@ -296,34 +345,68 @@ class McpJenkinsService {
     McpToken token,
     Map<String, dynamic> args,
   ) async {
-    final externalId = _str(args['accountId']);
-    final fullName = _str(args['projectFullName']);
+    final triggerId = _str(args['triggerId']);
+    final record = _triggers.byId(triggerId);
+    if (triggerId.isNotEmpty && record == null) {
+      return const McpCallOutcome.error(
+        'triggerId 无效或已过期（服务重启 / 记录被淘汰）。'
+        '请改用 buildNumber 或 queueId 查询，或重新 trigger_build。',
+      );
+    }
+    // 传了 triggerId 就以台账里的项目为准，避免调用方把项目名写错导致查错项目。
+    final externalId = record?.accountId ?? _str(args['accountId']);
+    final fullName = record?.projectFullName ?? _str(args['projectFullName']);
     final (account, err) = await _requireProject(token, externalId, fullName);
     if (err != null) return err;
     final repo = _ref.read(jenkinsRepositoryForAccountProvider(account!.id));
     if (repo == null) return _accountUnavailable();
 
-    final queueId = (args['queueId'] as num?)?.toInt();
-    var buildNumber = (args['buildNumber'] as num?)?.toInt();
+    var queueId = (args['queueId'] as num?)?.toInt() ?? record?.queueId;
+    var buildNumber =
+        (args['buildNumber'] as num?)?.toInt() ?? record?.buildNumber;
 
-    // 传了 queueId 就按「本次触发」精确定位，避免并发发版时读到别人的构建。
+    // 定位优先级：显式 buildNumber > 台账已记住的构建号 > queueId 反查 >
+    // 用 triggerId 现场认领（队列项 / 时间戳兜底）> 最近一次构建。
+    var cancelled = record?.cancelled ?? false;
+    String? queueWhy;
+    if (buildNumber == null && queueId == null && record != null) {
+      queueId = await _claimQueueId(repo, record);
+      record.queueId = queueId;
+      if (queueId != null) record.queueIdSource = 'queue-scan';
+    }
     if (buildNumber == null && queueId != null) {
       final resolved = await _resolveQueuedBuildNumber(repo, fullName, queueId);
-      if (resolved.buildNumber == null) {
-        return McpCallOutcome.ok({
-          'accountId': externalId,
-          'projectFullName': fullName,
-          'queueId': queueId,
-          'found': false,
-          'queued': !resolved.cancelled,
-          'cancelled': resolved.cancelled,
-          'queueWhy': resolved.why,
-          'message': resolved.cancelled
-              ? '该次发版在队列中被取消。'
-              : '该次发版仍在队列中，尚未分配构建号，请稍后重试。',
-        });
-      }
       buildNumber = resolved.buildNumber;
+      cancelled = cancelled || resolved.cancelled;
+      queueWhy = resolved.why;
+    }
+    if (buildNumber == null && record != null && !cancelled) {
+      final picked = await _claimBuildFromHistory(repo, record);
+      buildNumber = picked?.number;
+      if (record.queueId == null && picked?.queueId != null) {
+        record.queueId = picked!.queueId;
+        record.queueIdSource = 'history';
+      }
+    }
+    record?.buildNumber = buildNumber;
+    record?.cancelled = cancelled;
+
+    // 指定了某一次触发但还没分配构建号：明确回 queued，不要退回「最近一次构建」，
+    // 否则并发发版时会读到别人的构建。
+    if (buildNumber == null && (record != null || queueId != null)) {
+      return McpCallOutcome.ok({
+        'accountId': externalId,
+        'projectFullName': fullName,
+        'triggerId': ?record?.triggerId,
+        'queueId': queueId,
+        'found': false,
+        'queued': !cancelled,
+        'cancelled': cancelled,
+        'queueWhy': queueWhy,
+        'message': cancelled
+            ? '该次发版在队列中被取消。'
+            : '该次发版仍在队列中，尚未分配构建号，请稍后重试。',
+      });
     }
 
     if (buildNumber == null) {
@@ -353,6 +436,7 @@ class McpJenkinsService {
     return McpCallOutcome.ok({
       'accountId': externalId,
       'projectFullName': fullName,
+      'triggerId': ?record?.triggerId,
       'queueId': ?queueId,
       'found': true,
       'buildNumber': buildNumber,

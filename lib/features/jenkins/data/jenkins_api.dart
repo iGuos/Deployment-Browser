@@ -789,6 +789,52 @@ class JenkinsApi {
     return QueueItem.fromJson(res.data!);
   }
 
+  /// 列出当前队列里属于该项目的排队项（按 id 升序）。
+  ///
+  /// 触发接口的 `Location` 不是 `/queue/item/{id}/` 时（部分 Jenkins 对 Pipeline 的
+  /// `POST /build` + `json=` 只 302 回任务页，反向代理也可能改写 Location），
+  /// 这是把「本次触发」换回 queueId 的兜底手段。
+  Future<List<QueueItem>> fetchQueueItemsForJob(String jobFullName) async {
+    final res = await _dio.get<Map<String, dynamic>>(
+      '/queue/api/json',
+      queryParameters: {
+        'tree': 'items[id,why,cancelled,executable[number,url],task[name,fullName,url]]',
+      },
+    );
+    final items = (res.data?['items'] as List?) ?? const [];
+    final jobPath = _decodedPath(_jobApiPath(jobFullName, withApi: false));
+    final matched = <QueueItem>[];
+    for (final raw in items.whereType<Map<String, dynamic>>()) {
+      if (!_queueTaskMatches(raw['task'], jobFullName, jobPath)) continue;
+      matched.add(QueueItem.fromJson(raw));
+    }
+    matched.sort((a, b) => a.id.compareTo(b.id));
+    return matched;
+  }
+
+  /// 队列项的 task 是否就是目标 Job：优先比 `fullName`，否则比 URL 路径尾部
+  /// （项目名可能含空格 / 括号，统一解码后再比，避免编码差异误判）。
+  bool _queueTaskMatches(Object? task, String jobFullName, String jobPath) {
+    if (task is! Map) return false;
+    final full = task['fullName'];
+    if (full is String && full.isNotEmpty) return full == jobFullName;
+    final url = task['url'];
+    if (url is! String || url.isEmpty) return false;
+    var path = _decodedPath(Uri.tryParse(url)?.path ?? url);
+    while (path.endsWith('/')) {
+      path = path.substring(0, path.length - 1);
+    }
+    return path.endsWith(jobPath);
+  }
+
+  String _decodedPath(String path) {
+    try {
+      return Uri.decodeComponent(path);
+    } catch (_) {
+      return path;
+    }
+  }
+
   /// 按队列项 id 拉取队列项（相对 Jenkins 根路径，不依赖触发时返回的绝对 URL）。
   ///
   /// 供只持有 `queueId` 的调用方（如 MCP 客户端跨进程复查发版）使用。

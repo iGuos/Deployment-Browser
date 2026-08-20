@@ -91,6 +91,50 @@ void main() {
     expect(await api.findBuildNumberByQueueId('team/app', 9999), isNull);
   });
 
+  test('fetchQueueItemsForJob 只挑本项目的排队项，含空格/括号的项目名也能匹配', () async {
+    late String seenPath;
+    final api = JenkinsApi(
+      _fakeDio((options) {
+        seenPath = options.uri.path;
+        return const {
+          'items': [
+            {
+              'id': 31,
+              'cancelled': false,
+              'task': {'name': 'other-app', 'url': 'http://jenkins.example/job/other-app/'},
+            },
+            {
+              'id': 33,
+              'cancelled': false,
+              'why': '等待可用执行器',
+              // 没有 fullName 时按 URL 路径尾部匹配（名字里带空格与括号）
+              'task': {
+                'name': '(dev) antalpha-admin',
+                'url': 'http://jenkins.example/job/(dev)%20antalpha-admin/',
+              },
+            },
+            {
+              'id': 32,
+              'cancelled': false,
+              'task': {'fullName': '(dev) antalpha-admin', 'url': 'http://jenkins.example/x/'},
+            },
+          ],
+        };
+      }),
+    );
+
+    final items = await api.fetchQueueItemsForJob('(dev) antalpha-admin');
+    expect(seenPath, '/queue/api/json');
+    // 按 id 升序返回，便于「先触发的先认领」
+    expect(items.map((i) => i.id), [32, 33]);
+    expect(items.last.why, '等待可用执行器');
+  });
+
+  test('fetchQueueItemsForJob 队列为空时返回空列表', () async {
+    final api = JenkinsApi(_fakeDio((_) => const {'items': <dynamic>[]}));
+    expect(await api.fetchQueueItemsForJob('team/app'), isEmpty);
+  });
+
   test('构建历史查询带上 queueId 字段，供调用方对账', () async {
     final queries = <String>[];
     final api = JenkinsApi(

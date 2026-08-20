@@ -72,10 +72,11 @@ final List<McpToolSpec> kMcpToolSpecs = [
   McpToolSpec(
     name: kToolTriggerBuild,
     description: '根据账号 ID、项目 fullName 与参数触发一次发版构建。'
-        '返回本次发版的 queueId（触发即确定，是关联本次发版的唯一键）与 buildNumber（发版号）；'
+        '返回本次发版的 triggerId（每次调用都不同、永不为 null，是关联本次发版的唯一键）、'
+        'queueId（Jenkins 队列项 id，部分 Jenkins / 反向代理拿不到时为 null）与 buildNumber（发版号）；'
         '默认最多等待 $kMcpDefaultTriggerWaitSeconds 秒直到 Jenkins 分配 buildNumber，'
-        '仍未分配时 buildNumber 为 null 且 queued=true，可用 get_build_status 传 queueId 换回发版号。'
-        '同一项目连续多次发版时，请始终用 queueId / buildNumber 关联，不要按时间猜测。',
+        '仍未分配时 buildNumber 为 null 且 queued=true，可用 get_build_status 传 triggerId 换回发版号。'
+        '同一项目连续多次发版时，请为每次调用单独保存 triggerId 并用它关联，不要按时间或项目名猜测。',
     inputSchema: _obj(
       {
         'accountId': _accountIdProp,
@@ -97,8 +98,9 @@ final List<McpToolSpec> kMcpToolSpecs = [
   McpToolSpec(
     name: kToolGetBuildStatus,
     description: '根据账号 ID 与项目 fullName 查询发版进度（构建状态、流水线阶段）及控制台日志。'
-        '定位方式优先级：buildNumber > queueId（trigger_build 返回的关联键，会自动换回发版号）> 最近一次构建。'
-        '程序化轮询请传 queueId 或 buildNumber，否则并发发版时可能读到别人的构建。',
+        '定位方式优先级：buildNumber > triggerId（trigger_build 返回的唯一键，会自动换回发版号）'
+        '> queueId > 最近一次构建。'
+        '程序化轮询请传 triggerId（或已知的 buildNumber），否则同一项目多次发版时可能读到别人的构建。',
     inputSchema: _obj(
       {
         'accountId': _accountIdProp,
@@ -107,10 +109,15 @@ final List<McpToolSpec> kMcpToolSpecs = [
           'type': 'integer',
           'description': '构建号（发版号）；与 queueId 都省略时使用最近一次构建。',
         },
+        'triggerId': {
+          'type': 'string',
+          'description': 'trigger_build 返回的 triggerId；用于把「某一次触发」精确换回其发版号。'
+              '若该次发版仍在排队，返回 found=false 且 queued=true。',
+        },
         'queueId': {
           'type': 'integer',
-          'description': 'trigger_build 返回的 queueId；用于把「某一次触发」精确换回其发版号。'
-              '若该次发版仍在排队，返回 found=false 且 queued=true。',
+          'description': 'Jenkins 队列项 id（trigger_build 返回，可能为 null）；'
+              '仅在没有 triggerId 时使用，作用同 triggerId。',
         },
         'logStart': {
           'type': 'integer',

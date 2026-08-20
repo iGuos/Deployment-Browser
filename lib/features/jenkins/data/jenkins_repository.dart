@@ -187,6 +187,15 @@ class JenkinsRepository {
     }
   }
 
+  /// 列出队列里属于该项目的排队项；触发接口没给出 `/queue/item/{id}/` 时用它认领。
+  Future<List<QueueItem>> fetchQueueItemsForJob(String jobFullName) async {
+    try {
+      return await _api.fetchQueueItemsForJob(jobFullName);
+    } catch (e) {
+      throw toJenkinsException(e);
+    }
+  }
+
   /// 按 queueId 在构建历史里反查构建号；找不到返回 null。
   Future<int?> findBuildNumberByQueueId(
     String jobFullName,

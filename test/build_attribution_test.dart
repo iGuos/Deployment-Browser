@@ -6,9 +6,11 @@ JenkinsReleaseHistoryRow _row(
   int number,
   int timestamp, {
   Map<String, String> parameters = const {},
+  String? userId,
 }) => JenkinsReleaseHistoryRow(
   build: JenkinsBuild.fromJson({'number': number, 'timestamp': timestamp}),
   parameters: parameters,
+  releasedByUserId: userId,
 );
 
 void main() {
@@ -179,6 +181,48 @@ void main() {
         tryClaim: (_) => true,
       );
       expect(picked?.build.number, 316);
+    });
+
+    test('明确由别人触发的构建被排除（同参数的人工发版也不会串）', () {
+      // 同事在 Jenkins 页面上用同一套参数手动发了一次，号还更小
+      final rows = [
+        _row(
+          315,
+          1020000,
+          parameters: const {'SERVICE': 'admin-api'},
+          userId: 'colleague',
+        ),
+        _row(
+          316,
+          1021000,
+          parameters: const {'SERVICE': 'admin-api'},
+          userId: 'me',
+        ),
+      ];
+      final picked = pickOwnBuild(
+        rows: rows,
+        triggeredAt: 1019000,
+        historyFloor: 314,
+        triggeredParameters: const {'SERVICE': 'admin-api'},
+        tryClaim: (_) => true,
+        expectedUserId: 'ME',
+      );
+      expect(picked?.build.number, 316, reason: '登录名比对不区分大小写');
+    });
+
+    test('触发者解析不到时不排除（否则会把自己的构建判成别人的）', () {
+      final rows = [
+        _row(315, 1020000, parameters: const {'SERVICE': 'admin-api'}),
+      ];
+      final picked = pickOwnBuild(
+        rows: rows,
+        triggeredAt: 1019000,
+        historyFloor: 314,
+        triggeredParameters: const {'SERVICE': 'admin-api'},
+        tryClaim: (_) => true,
+        expectedUserId: 'me',
+      );
+      expect(picked?.build.number, 315);
     });
 
     test('容差窗口外的构建不认（时钟偏差以外）', () {

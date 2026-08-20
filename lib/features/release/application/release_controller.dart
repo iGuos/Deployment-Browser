@@ -10,6 +10,7 @@ import '../../../core/notifications/notifications_settings.dart';
 import '../../jenkins/application/build_attribution_provider.dart';
 import '../../jenkins/data/jenkins_repository.dart';
 import '../../jenkins/domain/build_attribution.dart';
+import '../../settings/data/jenkins_accounts_repository.dart';
 import '../../jenkins/domain/jenkins_build.dart';
 import '../../notifications/slack/slack_notifier.dart';
 
@@ -468,6 +469,19 @@ class ReleaseController extends Notifier<ReleaseRunState> {
   bool _claimBuild(int number) =>
       _attribution.claim(_registryKey, number, handle.runId);
 
+  /// 本 run 所用 Jenkins 账号的登录名；用于排除**明确由别人**触发的构建
+  /// （同事在 Jenkins 页面上手动发版）。读不到就返回 null，表示不做这层过滤。
+  String? _accountUserId() {
+    final accounts = ref.read(jenkinsAccountsProvider).value?.accounts;
+    if (accounts == null) return null;
+    for (final a in accounts) {
+      if (a.id != handle.jenkinsAccountId) continue;
+      final name = a.config.username.trim();
+      return name.isEmpty ? null : name;
+    }
+    return null;
+  }
+
   void _startQueuePolling() {
     _queuePollTimer?.cancel();
     _locateNewBuildOnce();
@@ -539,6 +553,7 @@ class ReleaseController extends Notifier<ReleaseRunState> {
         historyFloor: historyFloor,
         triggeredParameters: _triggerParameters,
         tryClaim: _claimBuild,
+        expectedUserId: _accountUserId(),
       );
       if (picked == null) return;
       _attachToNewBuild(picked.build.number, prefetched: picked.build);

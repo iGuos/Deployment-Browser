@@ -93,6 +93,7 @@ class JenkinsReleaseHistoryRow {
     required this.build,
     required this.parameters,
     this.releasedBy,
+    this.releasedByUserId,
     this.gitRevision,
   });
 
@@ -101,8 +102,14 @@ class JenkinsReleaseHistoryRow {
   /// 来自该次 build 的 `ParametersAction`；非参数化 Job 可能为空。
   final Map<String, String> parameters;
 
-  /// 触发构建的用户（`UserIdCause` 等）；解析不到则为 null。
+  /// 触发构建的用户（`UserIdCause` 等）；解析不到则为 null。展示用，可能是显示名。
   final String? releasedBy;
+
+  /// 触发者的 Jenkins 登录名（`UserIdCause.userId`）；解析不到则为 null。
+  ///
+  /// 与账号配置里的 username 同一命名空间，因此可用来判断「这条构建是不是本
+  /// 账号触发的」——[releasedBy] 常是显示名，不能拿来做这种比较。
+  final String? releasedByUserId;
 
   /// 本次构建对应的 Git 提交 SHA（完整）；展示时可缩写。
   final String? gitRevision;

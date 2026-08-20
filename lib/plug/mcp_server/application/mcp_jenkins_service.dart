@@ -164,6 +164,8 @@ class McpJenkinsService {
       // 与发版 UI 同一口径的归属键（内部账号 id + 项目全名），
       // 两条通道共用一份台账才不会互相认错构建。
       attributionKey: '${account.id}::$fullName',
+      // 账号登录名：兜底认亲时用来排除同事在 Jenkins 上手动触发的构建。
+      accountUserId: account.config.username.trim(),
       projectFullName: fullName,
       triggeredAt: DateTime.now().millisecondsSinceEpoch,
       parameters: merged,
@@ -407,6 +409,7 @@ class McpJenkinsService {
         historyFloor: record.historyFloor,
         triggeredParameters: record.parameters,
         tryClaim: (number) => _claimBuild(record, number),
+        expectedUserId: record.accountUserId,
       );
       return picked?.build;
     } catch (_) {

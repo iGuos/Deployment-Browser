@@ -12,6 +12,7 @@ class McpTriggerRecord {
     required this.triggerId,
     required this.accountId,
     required this.attributionKey,
+    required this.accountUserId,
     required this.projectFullName,
     required this.triggeredAt,
     required this.parameters,
@@ -26,6 +27,9 @@ class McpTriggerRecord {
 
   /// 共享构建归属台账（[BuildAttributionRegistry]）的键，与发版 UI 同一口径。
   final String attributionKey;
+
+  /// 触发所用账号的 Jenkins 登录名；用于排除别人手动触发的构建。
+  final String? accountUserId;
 
   final String projectFullName;
   final int triggeredAt;
@@ -62,6 +66,7 @@ class McpTriggerRegistry {
     required String accountId,
     required String attributionKey,
     required String projectFullName,
+    String? accountUserId,
     required int triggeredAt,
     required Map<String, String> parameters,
     int historyFloor = 0,
@@ -70,6 +75,7 @@ class McpTriggerRegistry {
       triggerId: 'trg_${triggeredAt}_${++_seq}',
       accountId: accountId,
       attributionKey: attributionKey,
+      accountUserId: accountUserId,
       projectFullName: projectFullName,
       triggeredAt: triggeredAt,
       parameters: Map<String, String>.unmodifiable(parameters),

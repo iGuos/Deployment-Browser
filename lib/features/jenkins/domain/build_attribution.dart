@@ -94,7 +94,8 @@ ParameterMatch matchBuildParameters({
 /// 发版 UI 与 MCP 共用这一份判定，保证两条通道的口径完全一致。三重约束缺一不可：
 ///
 /// - `number > historyFloor`：排除触发前就已存在的构建（事实下界，不会漂移）；
-/// - 参数快照匹配：排除同事在 Jenkins 上手动触发的、或本次发版另一路参数的构建；
+/// - 触发者比对：排除**明确由别人**触发的构建（[expectedUserId]）；
+/// - 参数快照匹配：排除本次发版另一路参数、或参数不同的人工触发；
 /// - [tryClaim] 原子认领：几乎同时轮询的多个触发，只有一个能拿到同一个号。
 ///
 /// 参数「对得上」的候选优先于「无法判断」的；同级按构建号升序，先触发的先拿。
@@ -105,12 +106,14 @@ JenkinsReleaseHistoryRow? pickOwnBuild({
   required int historyFloor,
   required Map<String, String> triggeredParameters,
   required bool Function(int buildNumber) tryClaim,
+  String? expectedUserId,
   int toleranceMs = 30 * 1000,
 }) {
   final candidates =
       rows
           .where((r) => r.build.number > historyFloor)
           .where((r) => r.build.timestamp >= triggeredAt - toleranceMs)
+          .where((r) => _triggeredByExpectedUser(r, expectedUserId))
           .map(
             (r) => (
               row: r,
@@ -134,3 +137,19 @@ JenkinsReleaseHistoryRow? pickOwnBuild({
 }
 
 int _matchRank(ParameterMatch m) => m == ParameterMatch.matched ? 0 : 1;
+
+/// 该构建是否**没有被排除**在「本账号触发」之外。
+///
+/// 只在两边都拿得到登录名、且确实不同时才判否——`releasedByUserId` 解析不到
+/// （非 UserIdCause、Jenkins 未回传）时一律放过，否则会把自己的构建判成别人的，
+/// 换来永久假排队，比偶尔认错更糟。
+bool _triggeredByExpectedUser(
+  JenkinsReleaseHistoryRow row,
+  String? expectedUserId,
+) {
+  final expected = expectedUserId?.trim();
+  if (expected == null || expected.isEmpty) return true;
+  final actual = row.releasedByUserId?.trim();
+  if (actual == null || actual.isEmpty) return true;
+  return actual.toLowerCase() == expected.toLowerCase();
+}

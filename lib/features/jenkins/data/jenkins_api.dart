@@ -344,10 +344,30 @@ class JenkinsApi {
             build: JenkinsBuild.fromJson(raw),
             parameters: _parameterMapFromBuildActions(raw),
             releasedBy: _releasedByFromBuildJson(raw),
+            releasedByUserId: _releasedByUserIdFromBuildJson(raw),
             gitRevision: _gitRevisionFromBuildJson(raw),
           ),
         )
         .toList(growable: false);
+  }
+
+  /// 触发者的登录名（`UserIdCause.userId`）；只取 userId，不回落到显示名。
+  ///
+  /// 用来判断某条构建是否由本账号触发（显示名与登录名往往不同，不能混用）。
+  String? _releasedByUserIdFromBuildJson(Map<String, dynamic> raw) {
+    final actions = raw['actions'];
+    if (actions is! List) return null;
+    for (final a in actions) {
+      if (a is! Map<String, dynamic>) continue;
+      final causes = a['causes'];
+      if (causes is! List) continue;
+      for (final c in causes) {
+        if (c is! Map<String, dynamic>) continue;
+        final userId = (c['userId'] as String?)?.trim();
+        if (userId != null && userId.isNotEmpty) return userId;
+      }
+    }
+    return null;
   }
 
   /// Jenkins `UserIdCause` 等在 `actions[].causes[]` 中。

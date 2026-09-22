@@ -6,6 +6,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/widgets/horizontal_tab_scroll.dart';
 import '../application/workspace_controller.dart';
 import '../domain/workspace_tab.dart';
+import 'project_status_icon.dart';
 
 /// 顶部 chrome-style 多标签栏。
 ///
@@ -110,6 +111,7 @@ class _WorkspaceTabBarState extends ConsumerState<WorkspaceTabBar> {
                   return _DraggableTab(
                     key: ValueKey(tab.id),
                     index: i,
+                    accountId: widget.accountId,
                     tab: tab,
                     active: active,
                     onActivate: () => notifier.activateTabForAccount(
@@ -289,6 +291,7 @@ class _DraggableTab extends StatelessWidget {
   const _DraggableTab({
     super.key,
     required this.index,
+    required this.accountId,
     required this.tab,
     required this.active,
     required this.onActivate,
@@ -297,6 +300,7 @@ class _DraggableTab extends StatelessWidget {
   });
 
   final int index;
+  final String accountId;
   final WorkspaceTab tab;
   final bool active;
   final VoidCallback onActivate;
@@ -307,6 +311,7 @@ class _DraggableTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = context.palette;
     final chip = _TabChip(
+      accountId: accountId,
       tab: tab,
       active: active,
       onActivate: onActivate,
@@ -432,12 +437,14 @@ class _DragFeedback extends StatelessWidget {
 
 class _TabChip extends StatefulWidget {
   const _TabChip({
+    required this.accountId,
     required this.tab,
     required this.active,
     required this.onActivate,
     this.onClose,
   });
 
+  final String accountId;
   final WorkspaceTab tab;
   final bool active;
   final VoidCallback onActivate;
@@ -503,7 +510,7 @@ class _TabChipState extends State<_TabChip> {
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   child: Row(
                     children: [
-                      _kindIcon(tab.kind, palette),
+                      _kindIcon(tab, palette),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -535,12 +542,19 @@ class _TabChipState extends State<_TabChip> {
     );
   }
 
-  Widget _kindIcon(WorkspaceTabKind kind, AppPalette palette) {
-    switch (kind) {
+  Widget _kindIcon(WorkspaceTab tab, AppPalette palette) {
+    switch (tab.kind) {
       case WorkspaceTabKind.settings:
         return Icon(Icons.settings_rounded, size: 14, color: palette.muted);
       case WorkspaceTabKind.project:
-        return Icon(Icons.rocket_launch_rounded, size: 14, color: palette.info);
+        // 工程标签的火箭跟着发版状态走：发版中呼吸动效，跑完成功绿 / 失败红。
+        return ProjectStatusIcon(
+          accountId: widget.accountId,
+          projectFullName: tab.projectFullName,
+          icon: Icons.rocket_launch_rounded,
+          size: 14,
+          fallbackColor: palette.info,
+        );
     }
   }
 }

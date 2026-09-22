@@ -119,6 +119,39 @@ class ProjectRunTabsController extends Notifier<ProjectRunTabsState> {
   }
 }
 
+/// 项目在本应用里的实时发版状态，供侧栏 / 标签图标着色与动效使用。
+enum ProjectLiveStatus { idle, running, success, failure, unstable, aborted }
+
+/// 汇总某个项目当前打开的全部 run tab，得出一个「这个项目现在怎么样」。
+///
+/// 侧栏树的 Jenkins `color` 只在手动刷新时才更新，发版过程中不会自己动；而每个
+/// run tab 本来就在轮询构建，拿它汇总就能实时反映发版中 / 成功 / 失败。
+///
+/// - 只要有一路还在触发、排队或构建 → [ProjectLiveStatus.running]
+/// - 否则取最近一次（runs 新的在前）已出结果的那一路
+/// - 没有 run tab（没在本应用发过版或已关闭）→ [ProjectLiveStatus.idle]，
+///   调用方退回 Jenkins 自带的 color
+final projectLiveStatusProvider =
+    Provider.family<ProjectLiveStatus, ProjectRunTabsKey>((ref, key) {
+      final runs = ref.watch(projectRunTabsProvider(key)).runs;
+      ProjectLiveStatus? latest;
+      for (final handle in runs) {
+        final s = ref.watch(releaseControllerProvider(handle));
+        if (s.triggering || s.aborting || s.hasQueueWaiting || s.isRunning) {
+          return ProjectLiveStatus.running;
+        }
+        latest ??= switch (s.build?.resultEnum) {
+          BuildResult.success => ProjectLiveStatus.success,
+          BuildResult.failure => ProjectLiveStatus.failure,
+          BuildResult.unstable => ProjectLiveStatus.unstable,
+          BuildResult.aborted => ProjectLiveStatus.aborted,
+          // 触发就失败（参数错误 / 鉴权失败等）也算这一路没成。
+          _ => s.errorMessage != null ? ProjectLiveStatus.failure : null,
+        };
+      }
+      return latest ?? ProjectLiveStatus.idle;
+    });
+
 /// 单个项目当前活跃的发版任务状态。
 @immutable
 class ReleaseRunState {

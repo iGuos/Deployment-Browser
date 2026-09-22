@@ -12,6 +12,7 @@ import '../application/jenkins_sidebar_favorites_provider.dart';
 import '../application/jenkins_sidebar_tree_mode_provider.dart';
 import '../application/workspace_controller.dart';
 import '../domain/workspace_tab.dart';
+import 'project_status_icon.dart';
 
 /// 桌面 / 平板侧边栏：项目树 + 搜索框 + 顶部标题。
 class WorkspaceSidebar extends ConsumerStatefulWidget {
@@ -385,6 +386,9 @@ IconData _sidebarJenkinsKindIcon(JenkinsNodeKind kind) {
 Color _sidebarJenkinsNodeIconColor(JenkinsNode node, AppPalette palette) {
   if (node.isFolder) return palette.warning;
   final color = node.color ?? '';
+  // Jenkins 在构建中会给颜色加 `_anime` 后缀（如 `blue_anime`），此时先按「发版中」
+  // 上色，结果色要等这一跑结束。
+  if (color.endsWith('_anime')) return palette.running;
   if (color.contains('blue')) return palette.success;
   if (color.contains('red')) return palette.danger;
   if (color.contains('yellow')) return palette.warning;
@@ -516,6 +520,7 @@ class _TreeBody extends StatelessWidget {
       children: [
         _NodeRow(
           node: node,
+          accountId: accountId,
           depth: depth,
           expanded: isOpen,
           isSelected: isSelected,
@@ -559,6 +564,7 @@ class _TreeBody extends StatelessWidget {
 class _NodeRow extends StatefulWidget {
   const _NodeRow({
     required this.node,
+    required this.accountId,
     required this.depth,
     required this.expanded,
     required this.isSelected,
@@ -569,6 +575,9 @@ class _NodeRow extends StatefulWidget {
   });
 
   final JenkinsNode node;
+
+  /// 当前 Jenkins 账号 id；为 null 时只能用 Jenkins 自带的 color 着色。
+  final String? accountId;
   final int depth;
   final bool expanded;
   final bool isSelected;
@@ -599,6 +608,7 @@ class _NodeRowState extends State<_NodeRow> {
     final showChevron =
         node.children.isNotEmpty && (node.kind == JenkinsNodeKind.folder || node.kind == JenkinsNodeKind.multibranch);
     final iconColor = _sidebarJenkinsNodeIconColor(node, palette);
+    final isFolderOnly = node.kind == JenkinsNodeKind.folder;
 
     final selected = widget.isSelected;
     final rowH = mobile ? 36.0 : 28.0;
@@ -646,7 +656,15 @@ class _NodeRowState extends State<_NodeRow> {
                     : null,
               ),
               SizedBox(width: mobile ? 6 : 4),
-              Icon(_sidebarJenkinsKindIcon(node.kind), size: kindIcon, color: iconColor),
+              // 纯文件夹不是发版对象（multibranch 是：它在工作区里就是一个工程标签）。
+              ProjectStatusIcon(
+                accountId: isFolderOnly ? null : widget.accountId,
+                projectFullName: node.fullName,
+                icon: _sidebarJenkinsKindIcon(node.kind),
+                size: kindIcon,
+                fallbackColor: iconColor,
+                jenkinsColor: isFolderOnly ? null : node.color,
+              ),
               SizedBox(width: mobile ? 10 : 8),
               Expanded(
                 child: Text(

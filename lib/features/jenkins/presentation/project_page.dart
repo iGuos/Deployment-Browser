@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/responsive/breakpoints.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/building_pulse.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../jenkins/domain/jenkins_build.dart';
 import '../../notifications/slack/slack_notifier.dart';
@@ -688,6 +689,8 @@ class _RunTabBarState extends ConsumerState<_RunTabBar> {
           final color = _runColor(state, palette);
           // 列表是新的在前，兜底序号按「第几次触发」算，最早的那次是 1。
           final label = _runLabel(state, runs.length - i);
+          final building =
+              state.triggering || state.hasQueueWaiting || state.isRunning;
           return InkWell(
             onTap: () => widget.onSelect(i),
             borderRadius: BorderRadius.circular(6),
@@ -703,12 +706,16 @@ class _RunTabBarState extends ConsumerState<_RunTabBar> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: color,
-                      shape: BoxShape.circle,
+                  // 这一路还在跑 → 状态点做呼吸动效，和侧栏图标是同一套语言。
+                  _pulseIfBuilding(
+                    building: building,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -740,6 +747,10 @@ class _RunTabBarState extends ConsumerState<_RunTabBar> {
         },
       ),
     );
+  }
+
+  Widget _pulseIfBuilding({required bool building, required Widget child}) {
+    return building ? BuildingPulse(child: child) : child;
   }
 
   String _runLabel(ReleaseRunState state, int seq) {

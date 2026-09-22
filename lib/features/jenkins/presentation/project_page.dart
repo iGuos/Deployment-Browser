@@ -235,12 +235,14 @@ class _ProjectPageState extends ConsumerState<ProjectPage> {
 
     final alias =
         ref.read(jobAliasProvider(widget.jenkinsAccountId))[widget.fullName];
-    for (final variant in variants) {
-      // 每一次触发都创建一个独立的 run（→ 独立 tab、独立 controller）。
-      // run tab 状态放在 provider 中，避免关闭其它工程 tab 导致本页临时重建时丢失。
-      final handle = ref
-          .read(projectRunTabsProvider(_runTabsKey).notifier)
-          .addRun(_activeJobFullName);
+    // 每一次触发都创建一个独立的 run（→ 独立 tab、独立 controller）。
+    // run tab 状态放在 provider 中，避免关闭其它工程 tab 导致本页临时重建时丢失。
+    // 整批一次性建好：新 tab 插在最前面，批内顺序与 variants 一致。
+    final handles = ref
+        .read(projectRunTabsProvider(_runTabsKey).notifier)
+        .addRuns(_activeJobFullName, variants.length);
+    for (final (i, variant) in variants.indexed) {
+      final handle = handles[i];
       final controller = ref.read(releaseControllerProvider(handle).notifier);
       await controller.trigger(
         parameters: variant.parameters,
@@ -619,7 +621,7 @@ class _RightPane extends ConsumerWidget {
 }
 
 /// 横排 tab 头：显示每个 run 的状态点 + #buildNumber + 关闭按钮。
-class _RunTabBar extends ConsumerWidget {
+class _RunTabBar extends ConsumerStatefulWidget {
   const _RunTabBar({
     required this.runs,
     required this.activeIndex,
@@ -633,8 +635,39 @@ class _RunTabBar extends ConsumerWidget {
   final ValueChanged<int> onClose;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_RunTabBar> createState() => _RunTabBarState();
+}
+
+class _RunTabBarState extends ConsumerState<_RunTabBar> {
+  final _scrollController = ScrollController();
+
+  @override
+  void didUpdateWidget(_RunTabBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 新 tab 插在最前面：如果之前横向滚动过，得把列表拉回开头，
+    // 否则刚触发的那一条还是在可视区域外。
+    if (widget.runs.length > oldWidget.runs.length) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scrollController.hasClients) return;
+        _scrollController.animateTo(
+          0,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+        );
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final palette = context.palette;
+    final runs = widget.runs;
     return Container(
       height: 36,
       decoration: BoxDecoration(
@@ -643,6 +676,7 @@ class _RunTabBar extends ConsumerWidget {
         border: Border.all(color: palette.borderSubtle),
       ),
       child: ListView.separated(
+        controller: _scrollController,
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
         itemCount: runs.length,
@@ -650,11 +684,12 @@ class _RunTabBar extends ConsumerWidget {
         itemBuilder: (ctx, i) {
           final h = runs[i];
           final state = ref.watch(releaseControllerProvider(h));
-          final isActive = i == activeIndex;
+          final isActive = i == widget.activeIndex;
           final color = _runColor(state, palette);
-          final label = _runLabel(state, i);
+          // 列表是新的在前，兜底序号按「第几次触发」算，最早的那次是 1。
+          final label = _runLabel(state, runs.length - i);
           return InkWell(
-            onTap: () => onSelect(i),
+            onTap: () => widget.onSelect(i),
             borderRadius: BorderRadius.circular(6),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -687,7 +722,7 @@ class _RunTabBar extends ConsumerWidget {
                   ),
                   const SizedBox(width: 6),
                   InkWell(
-                    onTap: () => onClose(i),
+                    onTap: () => widget.onClose(i),
                     borderRadius: BorderRadius.circular(10),
                     child: Padding(
                       padding: const EdgeInsets.all(2),
@@ -707,7 +742,7 @@ class _RunTabBar extends ConsumerWidget {
     );
   }
 
-  String _runLabel(ReleaseRunState state, int index) {
+  String _runLabel(ReleaseRunState state, int seq) {
     // 一次点击因多选展开出的多个 run，只靠 #号 / 队列号区分不了「哪一路」，
     // 所以带上多选取值（如 `#128 · admin-api`）。
     final variant = state.variantLabel;
@@ -715,7 +750,7 @@ class _RunTabBar extends ConsumerWidget {
     if (state.buildNumber != null) return '#${state.buildNumber}$suffix';
     if (state.queueItemId != null) return '队列 ${state.queueItemId}$suffix';
     if (state.triggering) return '触发中$suffix';
-    return '运行 ${index + 1}$suffix';
+    return '运行 $seq$suffix';
   }
 
   Color _runColor(ReleaseRunState state, AppPalette palette) {

@@ -64,20 +64,30 @@ class ProjectRunTabsController extends Notifier<ProjectRunTabsState> {
   @override
   ProjectRunTabsState build() => const ProjectRunTabsState();
 
-  RunHandle addRun(String jobFullName) {
-    final nextSeq = state.nextSeq + 1;
-    final handle = (
-      jenkinsAccountId: key.accountId,
-      jobFullName: jobFullName,
-      runId: '${DateTime.now().millisecondsSinceEpoch}-$nextSeq',
-    );
-    final runs = [...state.runs, handle];
+  /// 新建 [count] 个 run tab（多选一次展开 N 个），整批插到最前面并选中第一个，
+  /// 批内保持触发顺序。
+  ///
+  /// 追加到末尾的话，发几次之后新 tab 就被挤出可视区域，点了发版反而看不到刚
+  /// 触发的那一条；统一「新的在前」后，最新一次永远落在第一屏。
+  List<RunHandle> addRuns(String jobFullName, int count) {
+    if (count <= 0) return const [];
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final handles = <RunHandle>[];
+    var seq = state.nextSeq;
+    for (var i = 0; i < count; i++) {
+      seq += 1;
+      handles.add((
+        jenkinsAccountId: key.accountId,
+        jobFullName: jobFullName,
+        runId: '$now-$seq',
+      ));
+    }
     state = state.copyWith(
-      runs: runs,
-      activeIndex: runs.length - 1,
-      nextSeq: nextSeq,
+      runs: [...handles, ...state.runs],
+      activeIndex: 0,
+      nextSeq: seq,
     );
-    return handle;
+    return handles;
   }
 
   void selectRun(int index) {
